@@ -1,0 +1,28 @@
+http:
+  routers:
+    whoami:
+      rule: PathPrefix(`/`)
+      entryPoints:
+        - web
+      middlewares:
+        - jsonrpc-filter
+      service: whoami
+
+  services:
+    whoami:
+      loadBalancer:
+        servers:
+          - url: http://whoami:80
+
+  middlewares:
+    jsonrpc-filter:
+      plugin:
+        jsonrpc-filter:
+          blockedMethods:
+            - "debug_*"
+            - "admin_*"
+          allowedMethods:
+            - "eth_*"
+            - "net_*"
+            - "web3_*"
+          maxBatchSize: 50

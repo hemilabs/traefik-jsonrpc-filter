@@ -1,0 +1,130 @@
+# Copyright (c) 2024-2026 Hemi Labs, Inc.
+# Use of this source code is governed by the MIT License,
+# which can be found in the LICENSE file.
+
+# GitHub Actions workflow to lint, build and test.
+name: "Go"
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+concurrency:
+  group: "go-${{ github.workflow }}-${{ github.event.number || github.ref }}"
+  cancel-in-progress: "${{ github.event_name == 'pull_request' }}"
+
+env:
+  # renovate: datasource=github-releases depName=golangci/golangci-lint versioning=semver
+  GOLANGCI_LINT_VERSION: "v2.11.3"
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: "Lint"
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: "Setup Go"
+        id: "go"
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: "go.mod"
+
+      - name: "golangci-lint"
+        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
+        with:
+          version: "${{ env.GOLANGCI_LINT_VERSION }}"
+
+      - name: "golangci-lint fmt"
+        run: golangci-lint fmt --diff ./...
+
+  build:
+    name: "Build"
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: "Setup Go"
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: "go.mod"
+
+      - name: "Download and verify dependencies"
+        run: |
+          go mod download
+          go mod verify
+
+      - name: "go build"
+        run: go build ./...
+
+  test:
+    name: "Test"
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: "Setup Go"
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: "go.mod"
+
+      - name: "Download and verify dependencies"
+        run: |
+          go mod download
+          go mod verify
+
+      - name: "go test"
+        run: go test -coverprofile=$(PROJECT_ROOT)/coverage.out -covermode=atomic ./...
+
+  integration:
+    name: "Integration Test"
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: "Setup Go"
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: "go.mod"
+
+      - name: "Start Traefik"
+        run: docker compose up -d --wait --wait-timeout 30
+        working-directory: example
+
+      - name: "Wait for Traefik to be ready"
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3000/ > /dev/null 2>&1; then
+              echo "Traefik is ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Traefik did not become ready"
+          docker compose -f example/docker-compose.yml logs
+          exit 1
+
+      - name: "Integration tests"
+        env:
+          TRAEFIK_INTEGRATION_URL: "http://localhost:3000"
+        run: go test -v -run Integration -count=1 ./...
+
+      - name: "Traefik logs"
+        if: failure()
+        run: docker compose logs
+        working-directory: example
+
+      - name: "Stop Traefik"
+        if: always()
+        run: docker compose down
+        working-directory: example

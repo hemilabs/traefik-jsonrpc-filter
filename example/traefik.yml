@@ -1,0 +1,18 @@
+log:
+  level: DEBUG
+
+api:
+  insecure: true
+
+entryPoints:
+  web:
+    address: ":80"
+
+providers:
+  file:
+    filename: /etc/traefik/dynamic.yml
+
+experimental:
+  localPlugins:
+    jsonrpc-filter:
+      moduleName: github.com/hemilabs/traefik-jsonrpc-filter
