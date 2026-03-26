@@ -1,0 +1,10 @@
+# Project
+bin/
+dist/
+coverage.out
+
+# Editors
+.vscode/
+.idea/
+*.iml
+*.swp
