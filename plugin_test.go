@@ -664,7 +664,7 @@ func TestServeHTTP(t *testing.T) {
 			wantNextCalled: true,
 		},
 		{
-			name: "zero-value config still rejects GET",
+			name:   "zero-value config still rejects GET",
 			config: &Config{AllowedMethods: []string{"eth_*"}},
 			req: request{
 				httpMethod: http.MethodGet,
