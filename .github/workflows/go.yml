@@ -104,14 +104,13 @@ jobs:
       - name: "Wait for Traefik to be ready"
         run: |
           for i in $(seq 1 30); do
-            if curl -sf http://localhost:3000/ > /dev/null 2>&1; then
+            if curl -x OPTIONS -sf http://localhost:3000/ > /dev/null 2>&1; then
               echo "Traefik is ready"
               exit 0
             fi
             sleep 1
           done
           echo "Traefik did not become ready"
-          docker compose -f example/docker-compose.yml logs
           exit 1
 
       - name: "Integration tests"
