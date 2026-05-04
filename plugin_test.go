@@ -106,7 +106,7 @@ func TestNew(t *testing.T) {
 			config: &Config{
 				BlockedMethods: []BlockedMethod{{
 					Pattern: "debug_*",
-					Error: JSONRPCError{
+					Error: &JSONRPCError{
 						Code:    -12345,
 						Message: "error message",
 					},
@@ -528,6 +528,97 @@ func TestServeHTTP(t *testing.T) {
 			wantNextCalled: false,
 		},
 
+		// Malformed JSON variants exercising specific evaluator branches
+		{
+			// Hits the "trailing content" error branch in evaluate
+			// (well-formed object followed by malformed garbage).
+			name:   "malformed trailing content after object",
+			config: &Config{AllowedMethods: []string{"eth_*"}},
+			req: request{
+				httpMethod: http.MethodPost,
+				body:       `{"jsonrpc":"2.0","method":"eth_call","id":1}garbage`,
+			},
+			wantStatus:     http.StatusBadRequest,
+			wantBodySubstr: "-32600",
+			wantNextCalled: false,
+		},
+		{
+			// Hits "read batch element" error in evaluateBatchElement.
+			name:   "malformed batch element after valid one",
+			config: &Config{AllowedMethods: []string{"eth_*"}},
+			req: request{
+				httpMethod: http.MethodPost,
+				body:       `[{"jsonrpc":"2.0","method":"eth_call","id":1}, bad]`,
+			},
+			wantStatus:     http.StatusBadRequest,
+			wantBodySubstr: "-32600",
+			wantNextCalled: false,
+		},
+		{
+			// Hits "read \"method\" value" error in evaluateObject.
+			name:   "truncated body after method key",
+			config: &Config{AllowedMethods: []string{"eth_*"}},
+			req: request{
+				httpMethod: http.MethodPost,
+				body:       `{"jsonrpc":"2.0","method":`,
+			},
+			wantStatus:     http.StatusBadRequest,
+			wantBodySubstr: "-32600",
+			wantNextCalled: false,
+		},
+		{
+			// Hits "skip delim" error path in evaluateObject when method
+			// value is a malformed compound (unclosed array).
+			name:   "method value is malformed compound",
+			config: &Config{AllowedMethods: []string{"eth_*"}},
+			req: request{
+				httpMethod: http.MethodPost,
+				body:       `{"method":[1`,
+			},
+			wantStatus:     http.StatusBadRequest,
+			wantBodySubstr: "-32600",
+			wantNextCalled: false,
+		},
+		{
+			// Hits "read '}'" error path in evaluateObject when an
+			// unclosed object lives inside a batch.
+			name:   "batch element object unclosed",
+			config: &Config{AllowedMethods: []string{"eth_*"}},
+			req: request{
+				httpMethod: http.MethodPost,
+				body:       `[{`,
+			},
+			wantStatus:     http.StatusBadRequest,
+			wantBodySubstr: "-32600",
+			wantNextCalled: false,
+		},
+		{
+			// Hits "read ']'" error path in evaluate when a batch is
+			// missing its closing bracket.
+			name:   "batch missing closing bracket",
+			config: &Config{AllowedMethods: []string{"eth_*"}},
+			req: request{
+				httpMethod: http.MethodPost,
+				body:       `[{"jsonrpc":"2.0","method":"eth_call","id":1}`,
+			},
+			wantStatus:     http.StatusBadRequest,
+			wantBodySubstr: "-32600",
+			wantNextCalled: false,
+		},
+		{
+			// Hits skipValue Token error path when a non-method field has
+			// a malformed value.
+			name:   "non-method field has malformed value",
+			config: &Config{AllowedMethods: []string{"eth_*"}},
+			req: request{
+				httpMethod: http.MethodPost,
+				body:       `{"foo":invalid,"method":"eth_call"}`,
+			},
+			wantStatus:     http.StatusBadRequest,
+			wantBodySubstr: "-32600",
+			wantNextCalled: false,
+		},
+
 		// Method name exceeding max -> 400
 		{
 			name:   "method name too long",
@@ -578,6 +669,38 @@ func TestServeHTTP(t *testing.T) {
 			},
 			wantStatus:     http.StatusBadRequest,
 			wantNextCalled: false,
+		},
+		{
+			// Content-Length under-reports body size, bypassing the early
+			// req.ContentLength > maxBodyBytes check. The buf.Len check
+			// after reading should still reject the oversized body.
+			name: "buffered body exceeds max with under-reported content-length",
+			config: &Config{
+				AllowedMethods: []string{"eth_*"},
+				MaxBodyBytes:   50,
+			},
+			req: request{
+				httpMethod:    http.MethodPost,
+				body:          `{"jsonrpc":"2.0","method":"eth_call","params":["` + strings.Repeat("a", 200) + `"],"id":1}`,
+				contentLength: 1,
+			},
+			wantStatus:     http.StatusBadRequest,
+			wantNextCalled: false,
+		},
+		{
+			// Content-Length exceeds maxGrowHint (64 KiB); the buf.Grow hint
+			// should be capped at maxGrowHint rather than allocated in full.
+			name: "content-length exceeds grow hint cap",
+			config: &Config{
+				AllowedMethods: []string{"eth_*"},
+				MaxBodyBytes:   1 << 20,
+			},
+			req: request{
+				httpMethod: http.MethodPost,
+				body:       `{"jsonrpc":"2.0","method":"eth_call","params":["` + strings.Repeat("a", 70<<10) + `"],"id":1}`,
+			},
+			wantStatus:     http.StatusOK,
+			wantNextCalled: true,
 		},
 
 		// Custom block status code and body
@@ -837,6 +960,75 @@ func TestServeHTTP(t *testing.T) {
 				t.Errorf("next.body = %q, want %q", nh.body, tt.wantNextBody)
 			}
 		})
+	}
+}
+
+func TestCreateConfig(t *testing.T) {
+	t.Parallel()
+	cfg := CreateConfig()
+	if cfg == nil {
+		t.Fatal("CreateConfig returned nil")
+	}
+	if cfg.MaxBodyBytes != DefaultMaxBodyBytes {
+		t.Errorf("MaxBodyBytes = %d, want %d",
+			cfg.MaxBodyBytes, DefaultMaxBodyBytes)
+	}
+	if cfg.BlockStatusCode != DefaultBlockStatusCode {
+		t.Errorf("BlockStatusCode = %d, want %d",
+			cfg.BlockStatusCode, DefaultBlockStatusCode)
+	}
+	if cfg.BadRequestStatusCode != DefaultBadRequestStatusCode {
+		t.Errorf("BadRequestStatusCode = %d, want %d",
+			cfg.BadRequestStatusCode, DefaultBadRequestStatusCode)
+	}
+	if cfg.MaxBatchSize != DefaultMaxBatchSize {
+		t.Errorf("MaxBatchSize = %d, want %d",
+			cfg.MaxBatchSize, DefaultMaxBatchSize)
+	}
+	if cfg.BlockError.Code != defaultBlockErrorCode {
+		t.Errorf("BlockError.Code = %d, want %d",
+			cfg.BlockError.Code, defaultBlockErrorCode)
+	}
+	if cfg.BlockError.Message != defaultBlockErrorMessage {
+		t.Errorf("BlockError.Message = %q, want %q",
+			cfg.BlockError.Message, defaultBlockErrorMessage)
+	}
+	if cfg.BadRequestError.Code != defaultBadRequestCode {
+		t.Errorf("BadRequestError.Code = %d, want %d",
+			cfg.BadRequestError.Code, defaultBadRequestCode)
+	}
+	if cfg.BadRequestError.Message != defaultBadRequestMessage {
+		t.Errorf("BadRequestError.Message = %q, want %q",
+			cfg.BadRequestError.Message, defaultBadRequestMessage)
+	}
+	if len(cfg.PassthroughHTTPMethods) != len(DefaultPassthroughHTTPMethods) {
+		t.Errorf("PassthroughHTTPMethods len = %d, want %d",
+			len(cfg.PassthroughHTTPMethods),
+			len(DefaultPassthroughHTTPMethods))
+	}
+}
+
+func TestServeHTTPNilBody(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{AllowedMethods: []string{"eth_call"}}
+	nh := &recordHandler{}
+	h, err := New(t.Context(), nh, cfg, "test")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	req := httptest.NewRequestWithContext(t.Context(),
+		http.MethodPost, "/", nil)
+	req.Body = nil
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+	if nh.called {
+		t.Error("next handler should not be called")
 	}
 }
 

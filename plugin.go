@@ -27,8 +27,8 @@ type JSONRPCError struct {
 }
 
 type BlockedMethod struct {
-	Pattern string       `json:"pattern"`
-	Error   JSONRPCError `json:"error"`
+	Pattern string        `json:"pattern"`
+	Error   *JSONRPCError `json:"error,omitempty"`
 }
 
 type Config struct {
@@ -110,12 +110,6 @@ func (e *methodBlockedError) Error() string {
 	return fmt.Sprintf("method not allowed: %q", e.method)
 }
 
-func isMethodBlocked(err error) bool {
-	//nolint:errorlint // errors.As is not supported in Yaegi.
-	_, ok := err.(*methodBlockedError)
-	return ok
-}
-
 // CreateConfig returns the default Config. Called by Traefik.
 func CreateConfig() *Config {
 	return &Config{
@@ -170,7 +164,11 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 			return nil, fmt.Errorf("[%s] blockedMethods[%d] %q: %w",
 				name, i, bm.Pattern, err)
 		}
-		blockedMethods[i] = blockedMethodMatcher{matcher: m, err: &bm.Error}
+		var me *JSONRPCError
+		if bm.Error != nil {
+			me = mergeErr(bm.Error, defaultBlockErrorCode, defaultBlockErrorMessage)
+		}
+		blockedMethods[i] = blockedMethodMatcher{matcher: m, err: me}
 	}
 
 	// Compile allowed method patterns.
@@ -275,8 +273,9 @@ func (f *filterPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 	if err != nil {
 		_ = req.Body.Close()
-		if isMethodBlocked(err) {
-			f.reject(rw)
+		//nolint:errorlint // errors.As is not supported in Yaegi.
+		if e, ok := err.(*methodBlockedError); ok {
+			f.reject(rw, e.error)
 			return
 		}
 		f.badRequest(rw)
@@ -312,14 +311,19 @@ type jsonRPCResponse struct {
 	ID      *string       `json:"id"`
 }
 
-func (f *filterPlugin) reject(rw http.ResponseWriter) {
+func (f *filterPlugin) reject(rw http.ResponseWriter, e *JSONRPCError) {
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
 	rw.WriteHeader(f.blockStatusCode)
 
+	// Use global default if unset.
+	if e == nil {
+		e = f.blockError
+	}
+
+	//nolint:errchkjson // There is no way for us to log an error from the plugin.
 	_ = json.NewEncoder(rw).Encode(&jsonRPCResponse{
 		Version: jsonRPCVersion,
-		Error: mergeErr(f.blockError,
-			defaultBlockErrorCode, defaultBlockErrorMessage),
+		Error:   e,
 	})
 }
 
@@ -327,10 +331,10 @@ func (f *filterPlugin) badRequest(rw http.ResponseWriter) {
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
 	rw.WriteHeader(f.badRequestStatusCode)
 
+	//nolint:errchkjson // There is no way for us to log an error from the plugin.
 	_ = json.NewEncoder(rw).Encode(&jsonRPCResponse{
 		Version: jsonRPCVersion,
-		Error: mergeErr(f.badRequestError,
-			defaultBadRequestCode, defaultBadRequestMessage),
+		Error:   f.badRequestError,
 	})
 }
 
