@@ -94,6 +94,7 @@ const (
 	defaultBadRequestMessage = "invalid request"
 
 	maxMethodBytes = 256
+	maxIDBytes     = 256
 	maxNestDepth   = 64
 	maxGrowHint    = 64 << 10 // 64 KiB; buf grows organically beyond this
 )
@@ -130,7 +131,7 @@ func CreateConfig() *Config {
 }
 
 type blockedMethodMatcher struct {
-	matcher
+	m   matcher
 	err *JSONRPCError
 }
 
@@ -168,7 +169,7 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		if bm.Error != nil {
 			me = mergeErr(bm.Error, defaultBlockErrorCode, defaultBlockErrorMessage)
 		}
-		blockedMethods[i] = blockedMethodMatcher{matcher: m, err: me}
+		blockedMethods[i] = blockedMethodMatcher{m: m, err: me}
 	}
 
 	// Compile allowed method patterns.
@@ -264,7 +265,7 @@ func (f *filterPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	tee := io.TeeReader(limited, &buf)
 
 	// Evaluate request body.
-	err := f.evaluate(tee)
+	id, err := f.evaluate(tee)
 
 	if int64(buf.Len()) > f.maxBodyBytes {
 		_ = req.Body.Close()
@@ -273,9 +274,9 @@ func (f *filterPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 	if err != nil {
 		_ = req.Body.Close()
-		//nolint:errorlint // errors.As is not supported in Yaegi.
+		//nolint:errorlint // errors.As panics in Yaegi; use type assertion instead.
 		if e, ok := err.(*methodBlockedError); ok {
-			f.reject(rw, e.error)
+			f.reject(rw, id, e.error)
 			return
 		}
 		f.badRequest(rw)
@@ -289,9 +290,9 @@ func (f *filterPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 }
 
 func (f *filterPlugin) methodAllowed(method string) error {
-	for _, m := range f.blockedMethods {
-		if m.matches(method) {
-			return &methodBlockedError{method: method, error: m.err}
+	for _, bm := range f.blockedMethods {
+		if bm.m.matches(method) {
+			return &methodBlockedError{method: method, error: bm.err}
 		}
 	}
 	if len(f.allowedMethods) > 0 {
@@ -306,12 +307,12 @@ func (f *filterPlugin) methodAllowed(method string) error {
 }
 
 type jsonRPCResponse struct {
-	Version string        `json:"jsonrpc"`
-	Error   *JSONRPCError `json:"error,omitempty"`
-	ID      *string       `json:"id"`
+	Version string          `json:"jsonrpc"`
+	Error   *JSONRPCError   `json:"error,omitempty"`
+	ID      json.RawMessage `json:"id"`
 }
 
-func (f *filterPlugin) reject(rw http.ResponseWriter, e *JSONRPCError) {
+func (f *filterPlugin) reject(rw http.ResponseWriter, id json.RawMessage, e *JSONRPCError) {
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
 	rw.WriteHeader(f.blockStatusCode)
 
@@ -324,6 +325,7 @@ func (f *filterPlugin) reject(rw http.ResponseWriter, e *JSONRPCError) {
 	_ = json.NewEncoder(rw).Encode(&jsonRPCResponse{
 		Version: jsonRPCVersion,
 		Error:   e,
+		ID:      id,
 	})
 }
 
@@ -331,6 +333,10 @@ func (f *filterPlugin) badRequest(rw http.ResponseWriter) {
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
 	rw.WriteHeader(f.badRequestStatusCode)
 
+	// Per the JSON-RPC 2.0 spec, a malformed request that we cannot reliably
+	// parse should use an id value of null. We do not attempt to recover the
+	// id from a partially parsed body to avoid echoing an untrusted, possibly
+	// truncated value.
 	//nolint:errchkjson // There is no way for us to log an error from the plugin.
 	_ = json.NewEncoder(rw).Encode(&jsonRPCResponse{
 		Version: jsonRPCVersion,
@@ -338,132 +344,206 @@ func (f *filterPlugin) badRequest(rw http.ResponseWriter) {
 	})
 }
 
-func (f *filterPlugin) evaluate(r io.Reader) error {
+func (f *filterPlugin) evaluate(r io.Reader) (json.RawMessage, error) {
 	dec := json.NewDecoder(r)
 	dec.UseNumber()
 
 	tok, err := dec.Token()
 	if err != nil {
-		return fmt.Errorf("read first token: %w", err)
+		return nil, fmt.Errorf("read first token: %w", err)
 	}
 	d, ok := tok.(json.Delim)
 	if !ok {
-		return fmt.Errorf("unexpected token type: %T", tok)
+		return nil, fmt.Errorf("unexpected token type: %T", tok)
 	}
 
+	var id json.RawMessage
 	switch d {
 	case '{':
-		if err := f.evaluateObject(dec); err != nil {
-			return err
+		id, err = f.evaluateObject(dec)
+		if err != nil {
+			return id, err
 		}
 
 	case '[':
 		if !dec.More() {
-			return errors.New("empty batch array")
+			return nil, errors.New("empty batch array")
 		}
 		var count int
 		for dec.More() {
 			count++
 			if count > f.maxBatchSize {
-				return fmt.Errorf("batch size exceeds %d", f.maxBatchSize)
+				return nil, fmt.Errorf("batch size exceeds %d", f.maxBatchSize)
 			}
-			if err := f.evaluateBatchElement(dec); err != nil {
-				return err
+			id, err = f.evaluateBatchElement(dec)
+			if err != nil {
+				return id, err
 			}
 		}
+		// Batch succeeded; per JSON-RPC 2.0 spec, a successful batch response
+		// is an array. The middleware does not generate one (the upstream
+		// handles the request as-is), so no id is needed.
+		id = nil
 		if tok, err = dec.Token(); err != nil {
-			return fmt.Errorf("read ']': %w", err)
+			return nil, fmt.Errorf("read ']': %w", err)
 		} else if d, ok = tok.(json.Delim); !ok || d != ']' {
-			return fmt.Errorf("expected ']', got %q", tok)
+			return nil, fmt.Errorf("expected ']', got %q", tok)
 		}
 
 	default:
-		return fmt.Errorf("unexpected delim token: %q", d)
+		return nil, fmt.Errorf("unexpected delim token: %q", d)
 	}
 
 	tok, err = dec.Token()
 	if errors.Is(err, io.EOF) {
-		return nil
+		return id, nil
 	}
 	if err != nil {
-		return fmt.Errorf("trailing content: %w", err)
+		return id, fmt.Errorf("trailing content: %w", err)
 	}
-	return fmt.Errorf("unexpected trailing token: %q", tok)
+	return id, fmt.Errorf("unexpected trailing token: %q", tok)
 }
 
-func (f *filterPlugin) evaluateBatchElement(dec *json.Decoder) error {
+func (f *filterPlugin) evaluateBatchElement(dec *json.Decoder) (json.RawMessage, error) {
 	tok, err := dec.Token()
 	if err != nil {
-		return fmt.Errorf("read batch element: %w", err)
+		return nil, fmt.Errorf("read batch element: %w", err)
 	}
 	if d, ok := tok.(json.Delim); !ok || d != '{' {
-		return fmt.Errorf("batch element must be object, got %q", tok)
+		return nil, fmt.Errorf("batch element must be object, got %q", tok)
 	}
 	return f.evaluateObject(dec)
 }
 
-func (f *filterPlugin) evaluateObject(dec *json.Decoder) error {
-	var found bool
+func (f *filterPlugin) evaluateObject(dec *json.Decoder) (json.RawMessage, error) {
+	var (
+		methodFound bool
+		idFound     bool
+		id          json.RawMessage
+		blockedErr  *methodBlockedError
+	)
 
 	for dec.More() {
 		// Read key.
 		keyTok, err := dec.Token()
 		if err != nil {
-			return fmt.Errorf("read object key: %w", err)
+			return id, fmt.Errorf("read object key: %w", err)
 		}
 		key, ok := keyTok.(string)
 		if !ok {
-			return fmt.Errorf("expected string key, got %T", keyTok)
+			return id, fmt.Errorf("expected string key, got %T", keyTok)
 		}
 
-		if key != "method" {
-			if err := skipValue(dec); err != nil {
-				return fmt.Errorf("skip %q: %w", key, err)
+		switch key {
+		case "method":
+			if methodFound {
+				return id, errors.New("duplicate method field")
 			}
-			continue
-		}
 
-		if found {
-			return errors.New("duplicate method field")
-		}
-
-		// Read method value; must be a string per JSON-RPC spec.
-		valTok, err := dec.Token()
-		if err != nil {
-			return fmt.Errorf("read %q value: %w", key, err)
-		}
-		method, ok := valTok.(string)
-		if !ok {
-			if d, ok := valTok.(json.Delim); ok {
-				// Value is an array or object; skip the compound body.
-				if err := skipCompound(dec, d); err != nil {
-					return fmt.Errorf("skip delim: %w", err)
+			// Read method value; must be a string per JSON-RPC 2.0 spec.
+			valTok, err := dec.Token()
+			if err != nil {
+				return id, fmt.Errorf("read %q value: %w", key, err)
+			}
+			method, ok := valTok.(string)
+			if !ok {
+				if d, ok := valTok.(json.Delim); ok {
+					// Value is an array or object; skip the compound body.
+					if err := skipCompound(dec, d); err != nil {
+						return id, fmt.Errorf("skip delim: %w", err)
+					}
 				}
+				return id, fmt.Errorf("expected string method value, got %T", valTok)
 			}
-			return fmt.Errorf("expected string method value, got %T", valTok)
-		}
 
-		if len(method) > maxMethodBytes {
-			return fmt.Errorf("method name exceeds %d bytes", maxMethodBytes)
-		}
+			if len(method) > maxMethodBytes {
+				return id, fmt.Errorf("method name exceeds %d bytes", maxMethodBytes)
+			}
 
-		found = true
-		if err = f.methodAllowed(method); err != nil {
-			return err
+			methodFound = true
+			if err := f.methodAllowed(method); err != nil {
+				//nolint:errorlint // errors.As panics in Yaegi; use type assertion instead.
+				if mbe, ok := err.(*methodBlockedError); ok {
+					// Defer returning so a late "id" field can still be
+					// captured for the JSON-RPC response.
+					blockedErr = mbe
+					continue
+				}
+				return id, err
+			}
+
+		case "id":
+			if idFound {
+				return id, errors.New("duplicate id field")
+			}
+			idFound = true
+			rawID, err := readID(dec)
+			if err != nil {
+				return id, fmt.Errorf("read id: %w", err)
+			}
+			id = rawID
+
+		default:
+			if err := skipValue(dec); err != nil {
+				return id, fmt.Errorf("skip %q: %w", key, err)
+			}
 		}
 	}
 
 	if tok, err := dec.Token(); err != nil {
-		return fmt.Errorf("read '}': %w", err)
+		return id, fmt.Errorf("read '}': %w", err)
 	} else if d, ok := tok.(json.Delim); !ok || d != '}' {
-		return fmt.Errorf("expected '}', got %q", tok)
+		return id, fmt.Errorf("expected '}', got %q", tok)
 	}
 
 	// JSON-RPC request object must contain a method field.
-	if !found {
-		return errors.New("missing method field")
+	if !methodFound {
+		return id, errors.New("missing method field")
 	}
-	return nil
+	if blockedErr != nil {
+		return id, blockedErr
+	}
+	return id, nil
+}
+
+// readID reads the next JSON value as a JSON-RPC 2.0 id and returns its raw
+// JSON representation. Per the JSON-RPC 2.0 spec, id must be a string, number,
+// or null. Compound (object/array) and oversized values are skipped and
+// reported as a nil id (which marshals as null in the response).
+func readID(dec *json.Decoder) (json.RawMessage, error) {
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	switch v := tok.(type) {
+	case string:
+		if len(v) > maxIDBytes {
+			return nil, nil
+		}
+		// Re-encode through json.Marshal to handle escaping correctly.
+		b, err := json.Marshal(v)
+		if err != nil {
+			return nil, nil //nolint:nilerr // safe fallback to null id
+		}
+		return b, nil
+	case json.Number:
+		s := string(v)
+		if len(s) > maxIDBytes {
+			return nil, nil
+		}
+		return []byte(s), nil
+	case nil:
+		return []byte("null"), nil
+	case json.Delim:
+		// Object or array; not a valid JSON-RPC id. Skip and drop.
+		if err := skipCompound(dec, v); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	default:
+		// Booleans and any unexpected types: not a valid id, drop.
+		return nil, nil
+	}
 }
 
 func skipValue(dec *json.Decoder) error {

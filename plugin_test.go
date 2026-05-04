@@ -619,6 +619,43 @@ func TestServeHTTP(t *testing.T) {
 			wantNextCalled: false,
 		},
 
+		{
+			// Hits readID Token error (truncated body after id key).
+			name:   "truncated body after id key",
+			config: &Config{AllowedMethods: []string{"eth_*"}},
+			req: request{
+				httpMethod: http.MethodPost,
+				body:       `{"id":`,
+			},
+			wantStatus:     http.StatusBadRequest,
+			wantBodySubstr: "-32600",
+			wantNextCalled: false,
+		},
+		{
+			// Hits readID skipCompound error path with malformed array id.
+			name:   "id is malformed compound (unclosed array)",
+			config: &Config{AllowedMethods: []string{"eth_*"}},
+			req: request{
+				httpMethod: http.MethodPost,
+				body:       `{"id":[1,`,
+			},
+			wantStatus:     http.StatusBadRequest,
+			wantBodySubstr: "-32600",
+			wantNextCalled: false,
+		},
+		{
+			// Hits the duplicate id field error path in evaluateObject.
+			name:   "duplicate id field",
+			config: &Config{AllowedMethods: []string{"eth_*"}},
+			req: request{
+				httpMethod: http.MethodPost,
+				body:       `{"id":1,"id":2,"method":"eth_call"}`,
+			},
+			wantStatus:     http.StatusBadRequest,
+			wantBodySubstr: "-32600",
+			wantNextCalled: false,
+		},
+
 		// Method name exceeding max -> 400
 		{
 			name:   "method name too long",
@@ -719,7 +756,7 @@ func TestServeHTTP(t *testing.T) {
 				body:       `{"jsonrpc":"2.0","method":"debug_trace","id":1}`,
 			},
 			wantStatus:     429,
-			wantBodySubstr: `{"jsonrpc":"2.0","error":{"code":1,"message":"blocked"},"id":null}`,
+			wantBodySubstr: `{"jsonrpc":"2.0","error":{"code":1,"message":"blocked"},"id":1}`,
 			wantNextCalled: false,
 		},
 		{
@@ -1029,6 +1066,218 @@ func TestServeHTTPNilBody(t *testing.T) {
 	}
 	if nh.called {
 		t.Error("next handler should not be called")
+	}
+}
+
+func TestServeHTTPResponseID(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{BlockedMethods: []BlockedMethod{{Pattern: "debug_*"}}}
+	tests := []struct {
+		name       string
+		body       string
+		wantIDJSON string // expected "id":<value> substring in response body
+	}{
+		{
+			name:       "numeric id echoed",
+			body:       `{"jsonrpc":"2.0","method":"debug_x","id":42}`,
+			wantIDJSON: `"id":42`,
+		},
+		{
+			name:       "negative numeric id echoed",
+			body:       `{"jsonrpc":"2.0","method":"debug_x","id":-7}`,
+			wantIDJSON: `"id":-7`,
+		},
+		{
+			name:       "fractional numeric id echoed",
+			body:       `{"jsonrpc":"2.0","method":"debug_x","id":1.5}`,
+			wantIDJSON: `"id":1.5`,
+		},
+		{
+			name:       "very large integer id preserved as text",
+			body:       `{"jsonrpc":"2.0","method":"debug_x","id":99999999999999999999}`,
+			wantIDJSON: `"id":99999999999999999999`,
+		},
+		{
+			name:       "string id echoed",
+			body:       `{"jsonrpc":"2.0","method":"debug_x","id":"req-1"}`,
+			wantIDJSON: `"id":"req-1"`,
+		},
+		{
+			name:       "string id with escapes re-encoded safely",
+			body:       `{"jsonrpc":"2.0","method":"debug_x","id":"a\"b"}`,
+			wantIDJSON: `"id":"a\"b"`,
+		},
+		{
+			name:       "null id echoed",
+			body:       `{"jsonrpc":"2.0","method":"debug_x","id":null}`,
+			wantIDJSON: `"id":null`,
+		},
+		{
+			name:       "missing id defaults to null",
+			body:       `{"jsonrpc":"2.0","method":"debug_x"}`,
+			wantIDJSON: `"id":null`,
+		},
+		{
+			name:       "id appears before method",
+			body:       `{"id":7,"jsonrpc":"2.0","method":"debug_x"}`,
+			wantIDJSON: `"id":7`,
+		},
+		{
+			name:       "id appears after method (late capture)",
+			body:       `{"jsonrpc":"2.0","method":"debug_x","params":[],"id":9}`,
+			wantIDJSON: `"id":9`,
+		},
+		{
+			name:       "boolean id dropped to null",
+			body:       `{"jsonrpc":"2.0","method":"debug_x","id":true}`,
+			wantIDJSON: `"id":null`,
+		},
+		{
+			name:       "object id dropped to null",
+			body:       `{"jsonrpc":"2.0","method":"debug_x","id":{"x":1}}`,
+			wantIDJSON: `"id":null`,
+		},
+		{
+			name:       "array id dropped to null",
+			body:       `{"jsonrpc":"2.0","method":"debug_x","id":[1,2]}`,
+			wantIDJSON: `"id":null`,
+		},
+		{
+			name:       "oversized string id dropped to null",
+			body:       `{"jsonrpc":"2.0","method":"debug_x","id":"` + strings.Repeat("a", 257) + `"}`,
+			wantIDJSON: `"id":null`,
+		},
+		{
+			name:       "string id at max length preserved",
+			body:       `{"jsonrpc":"2.0","method":"debug_x","id":"` + strings.Repeat("a", 256) + `"}`,
+			wantIDJSON: `"id":"` + strings.Repeat("a", 256) + `"`,
+		},
+		{
+			name:       "oversized numeric id dropped to null",
+			body:       `{"jsonrpc":"2.0","method":"debug_x","id":` + strings.Repeat("9", 257) + `}`,
+			wantIDJSON: `"id":null`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			nh := &recordHandler{}
+			h, err := New(t.Context(), nh, cfg, "test")
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			req := httptest.NewRequestWithContext(t.Context(),
+				http.MethodPost, "/", strings.NewReader(tt.body))
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body = %s",
+					rr.Code, http.StatusForbidden, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), tt.wantIDJSON) {
+				t.Errorf("body = %q, want substring %q",
+					rr.Body.String(), tt.wantIDJSON)
+			}
+			if nh.called {
+				t.Error("next handler should not be called")
+			}
+		})
+	}
+}
+
+func TestServeHTTPResponseIDBatch(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		AllowedMethods: []string{"eth_*"},
+		BlockedMethods: []BlockedMethod{{Pattern: "debug_*"}},
+	}
+	tests := []struct {
+		name       string
+		body       string
+		wantIDJSON string
+	}{
+		{
+			name:       "first element blocked echoes its id",
+			body:       `[{"jsonrpc":"2.0","method":"debug_x","id":1},{"jsonrpc":"2.0","method":"eth_call","id":2}]`,
+			wantIDJSON: `"id":1`,
+		},
+		{
+			name:       "second element blocked echoes its id",
+			body:       `[{"jsonrpc":"2.0","method":"eth_call","id":1},{"jsonrpc":"2.0","method":"debug_x","id":2}]`,
+			wantIDJSON: `"id":2`,
+		},
+		{
+			name:       "blocked element with string id",
+			body:       `[{"jsonrpc":"2.0","method":"eth_call","id":1},{"jsonrpc":"2.0","method":"debug_x","id":"abc"}]`,
+			wantIDJSON: `"id":"abc"`,
+		},
+		{
+			name:       "blocked element with no id",
+			body:       `[{"jsonrpc":"2.0","method":"eth_call","id":1},{"jsonrpc":"2.0","method":"debug_x"}]`,
+			wantIDJSON: `"id":null`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			nh := &recordHandler{}
+			h, err := New(t.Context(), nh, cfg, "test")
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			req := httptest.NewRequestWithContext(t.Context(),
+				http.MethodPost, "/", strings.NewReader(tt.body))
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body = %s",
+					rr.Code, http.StatusForbidden, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), tt.wantIDJSON) {
+				t.Errorf("body = %q, want substring %q",
+					rr.Body.String(), tt.wantIDJSON)
+			}
+		})
+	}
+}
+
+func TestServeHTTPBadRequestIDNull(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{AllowedMethods: []string{"eth_*"}}
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "malformed JSON with id", body: `{"id":5,"method":}`},
+		{name: "duplicate id field", body: `{"id":1,"id":2,"method":"eth_call"}`},
+		{name: "missing method with id", body: `{"id":99,"jsonrpc":"2.0"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			nh := &recordHandler{}
+			h, err := New(t.Context(), nh, cfg, "test")
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			req := httptest.NewRequestWithContext(t.Context(),
+				http.MethodPost, "/", strings.NewReader(tt.body))
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
+			}
+			if !strings.Contains(rr.Body.String(), `"id":null`) {
+				t.Errorf("body = %q, want substring %q",
+					rr.Body.String(), `"id":null`)
+			}
+		})
 	}
 }
 

@@ -19,8 +19,8 @@ http:
       plugin:
         jsonrpc-filter:
           blockedMethods:
-            - "debug_*"
-            - "admin_*"
+            - pattern: "debug_*"
+            - pattern: "admin_*"
           allowedMethods:
             - "eth_*"
             - "net_*"
