@@ -15,11 +15,27 @@ import (
 	"strings"
 )
 
+const (
+	// jsonRPCVersion is the JSON-RPC specification version used by the plugin.
+	jsonRPCVersion = "2.0"
+)
+
+type JSONRPCError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    any    `json:"data,omitempty"`
+}
+
+type BlockedMethod struct {
+	Pattern string       `json:"pattern"`
+	Error   JSONRPCError `json:"error"`
+}
+
 type Config struct {
 	// BlockedMethods is a list of patterns to reject.
 	// Supports exact match, prefix*, *suffix, *contains*, and regex:<expr>
 	// Evaluated before AllowedMethods.
-	BlockedMethods []string `json:"blockedMethods,omitempty"`
+	BlockedMethods []BlockedMethod `json:"blockedMethods,omitempty"`
 
 	// AllowedMethods, if non-empty, enables allowlist mode.
 	// Only methods matching at least one allowed pattern AND not matching any
@@ -32,54 +48,62 @@ type Config struct {
 	MaxBodyBytes int64 `json:"maxBodyBytes,omitempty"`
 
 	// BlockStatusCode is the HTTP status code used for rejected requests.
-	// Default: 403
+	// This cab be overridden per blocked method. Default: 403
 	BlockStatusCode int `json:"blockStatusCode,omitempty"`
 
-	// BlockResponseBody is the JSON-RPC error body returned for rejected
-	// requests.
-	// Default: {"jsonrpc":"2.0","error":{"code":-32601,"message":"method not allowed"},"id":null}
-	BlockResponseBody string `json:"blockResponseBody,omitempty"`
+	// BlockError is the JSON-RPC error response used for rejected requests.
+	// This can be overridden per blocked method.
+	BlockError JSONRPCError `json:"blockError,omitempty"`
+
+	// BadRequestStatusCode is the HTTP status code used for bad requests.
+	// Default: 400
+	BadRequestStatusCode int `json:"badRequestStatusCode,omitempty"`
+
+	// BadRequestError is the JSON-RPC error response used for bad requests.
+	BadRequestError JSONRPCError `json:"badRequestError,omitempty"`
 
 	// MaxBatchSize is the maximum number of elements allowed in a JSON-RPC
 	// batch array. Requests exceeding this are rejected.
 	// Default: 100
 	MaxBatchSize int `json:"maxBatchSize,omitempty"`
 
-	// RestrictMethods, when true, rejects all non-POST requests with HTTP 405
+	// RestrictHTTPMethods, when true, rejects all non-POST requests with HTTP 405
 	// and ignores PassthroughHTTPMethods. Use this for strict JSON-RPC enforcement.
 	// Default: false
-	RestrictMethods bool `json:"restrictMethods,omitempty"`
+	RestrictHTTPMethods bool `json:"restrictHTTPMethods,omitempty"`
 
 	// PassthroughHTTPMethods is a list of HTTP methods that bypass inspection
 	// and are passed directly to the next handler. POST requests will always
 	// be inspected. If a request method is not POST and is not listed, an
 	// HTTP 405 Method Not Allowed response will be returned.
-	// Ignored when RestrictMethods is true.
+	// Ignored when RestrictHTTPMethods is true.
 	//
 	// Default: ["OPTIONS"] (preserves CORS preflight)
 	PassthroughHTTPMethods []string `json:"passthroughHTTPMethods,omitempty"`
 }
 
 const (
-	DefaultMaxBodyBytes      int64  = 1 << 20
-	DefaultBlockStatusCode   int    = 403
-	DefaultBlockResponseBody string = `{"jsonrpc":"2.0","error":{"code":-32601,"message":"method not allowed"},"id":null}`
-	DefaultMaxBatchSize      int    = 100
+	DefaultMaxBodyBytes         int64 = 1 << 20
+	DefaultBlockStatusCode      int   = http.StatusForbidden
+	DefaultBadRequestStatusCode int   = http.StatusBadRequest
+	DefaultMaxBatchSize         int   = 100
+
+	defaultBlockErrorCode    = -32601
+	defaultBlockErrorMessage = "method not allowed"
+	defaultBadRequestCode    = -32600
+	defaultBadRequestMessage = "invalid request"
 
 	maxMethodBytes = 256
 	maxNestDepth   = 64
 	maxGrowHint    = 64 << 10 // 64 KiB; buf grows organically beyond this
 )
 
-var (
-	DefaultPassthroughHTTPMethods = []string{"OPTIONS"}
-
-	badRequestBodyBytes = []byte(`{"jsonrpc":"2.0","error":{"code":-32600,"message":"invalid request"},"id":null}`)
-)
+var DefaultPassthroughHTTPMethods = []string{"OPTIONS"}
 
 // methodBlockedError is returned when a method is explicitly blocked by policy.
 type methodBlockedError struct {
 	method string
+	error  *JSONRPCError
 }
 
 func (e *methodBlockedError) Error() string {
@@ -95,25 +119,41 @@ func isMethodBlocked(err error) bool {
 // CreateConfig returns the default Config. Called by Traefik.
 func CreateConfig() *Config {
 	return &Config{
-		MaxBodyBytes:           DefaultMaxBodyBytes,
-		BlockStatusCode:        DefaultBlockStatusCode,
-		BlockResponseBody:      DefaultBlockResponseBody,
+		MaxBodyBytes:         DefaultMaxBodyBytes,
+		BlockStatusCode:      DefaultBlockStatusCode,
+		BadRequestStatusCode: DefaultBadRequestStatusCode,
+		BlockError: JSONRPCError{
+			Code:    defaultBlockErrorCode,
+			Message: defaultBlockErrorMessage,
+		},
+		BadRequestError: JSONRPCError{
+			Code:    defaultBadRequestCode,
+			Message: defaultBadRequestMessage,
+		},
 		MaxBatchSize:           DefaultMaxBatchSize,
 		PassthroughHTTPMethods: DefaultPassthroughHTTPMethods,
 	}
+}
+
+type blockedMethodMatcher struct {
+	matcher
+	err *JSONRPCError
 }
 
 type filterPlugin struct {
 	next http.Handler
 	name string
 
-	blockedMethods []matcher
+	blockedMethods []blockedMethodMatcher
 	allowedMethods []matcher
+
+	blockStatusCode      int
+	badRequestStatusCode int
+	blockError           *JSONRPCError
+	badRequestError      *JSONRPCError
 
 	maxBodyBytes           int64
 	maxBatchSize           int
-	blockStatusCode        int
-	blockResponseBodyBytes []byte
 	passthroughHTTPMethods map[string]struct{}
 }
 
@@ -123,14 +163,14 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 	}
 
 	// Compile blocked method patterns.
-	blockedMethods := make([]matcher, len(config.BlockedMethods))
-	for i, p := range config.BlockedMethods {
-		m, err := compilePattern(p)
+	blockedMethods := make([]blockedMethodMatcher, len(config.BlockedMethods))
+	for i, bm := range config.BlockedMethods {
+		m, err := compilePattern(bm.Pattern)
 		if err != nil {
 			return nil, fmt.Errorf("[%s] blockedMethods[%d] %q: %w",
-				name, i, p, err)
+				name, i, bm.Pattern, err)
 		}
-		blockedMethods[i] = m
+		blockedMethods[i] = blockedMethodMatcher{matcher: m, err: &bm.Error}
 	}
 
 	// Compile allowed method patterns.
@@ -144,28 +184,29 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		allowedMethods[i] = m
 	}
 
-	maxBodyBytes := DefaultMaxBodyBytes
-	if config.MaxBodyBytes > 0 {
-		maxBodyBytes = config.MaxBodyBytes
+	if config.MaxBodyBytes == 0 {
+		config.MaxBodyBytes = DefaultMaxBodyBytes
 	}
-	blockStatusCode := DefaultBlockStatusCode
-	if config.BlockStatusCode != 0 {
-		blockStatusCode = config.BlockStatusCode
+	if config.BlockStatusCode == 0 {
+		config.BlockStatusCode = DefaultBlockStatusCode
 	}
-	if blockStatusCode < 400 || blockStatusCode > 599 {
-		return nil, fmt.Errorf("[%s] blockStatusCode must be 4xx or 5xx, got %d", name, blockStatusCode)
+	if config.BlockStatusCode < 400 || config.BlockStatusCode > 599 {
+		return nil, fmt.Errorf("[%s] blockStatusCode must be 4xx or 5xx, got %d",
+			name, config.BlockStatusCode)
 	}
-	blockResponseBody := DefaultBlockResponseBody
-	if config.BlockResponseBody != "" {
-		blockResponseBody = config.BlockResponseBody
+	if config.BadRequestStatusCode == 0 {
+		config.BadRequestStatusCode = DefaultBadRequestStatusCode
 	}
-	maxBatchSize := DefaultMaxBatchSize
-	if config.MaxBatchSize > 0 {
-		maxBatchSize = config.MaxBatchSize
+	if bsc := config.BadRequestStatusCode; bsc < 400 || bsc > 599 {
+		return nil, fmt.Errorf("[%s] badRequestStatusCode must be 4xx or 5xx, got %d",
+			name, bsc)
+	}
+	if config.MaxBatchSize == 0 {
+		config.MaxBatchSize = DefaultMaxBatchSize
 	}
 
 	var passthrough map[string]struct{}
-	if !config.RestrictMethods {
+	if !config.RestrictHTTPMethods {
 		passthroughMethods := DefaultPassthroughHTTPMethods
 		if len(config.PassthroughHTTPMethods) > 0 {
 			passthroughMethods = config.PassthroughHTTPMethods
@@ -181,10 +222,12 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		name:                   name,
 		blockedMethods:         blockedMethods,
 		allowedMethods:         allowedMethods,
-		maxBodyBytes:           maxBodyBytes,
-		maxBatchSize:           maxBatchSize,
-		blockStatusCode:        blockStatusCode,
-		blockResponseBodyBytes: []byte(blockResponseBody),
+		maxBodyBytes:           config.MaxBodyBytes,
+		maxBatchSize:           config.MaxBatchSize,
+		blockStatusCode:        config.BlockStatusCode,
+		badRequestStatusCode:   config.BadRequestStatusCode,
+		blockError:             mergeErr(&config.BlockError, defaultBlockErrorCode, defaultBlockErrorMessage),
+		badRequestError:        mergeErr(&config.BadRequestError, defaultBadRequestCode, defaultBadRequestMessage),
 		passthroughHTTPMethods: passthrough,
 	}, nil
 }
@@ -234,9 +277,9 @@ func (f *filterPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		_ = req.Body.Close()
 		if isMethodBlocked(err) {
 			f.reject(rw)
-		} else {
-			f.badRequest(rw)
+			return
 		}
+		f.badRequest(rw)
 		return
 	}
 
@@ -246,34 +289,49 @@ func (f *filterPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	f.next.ServeHTTP(rw, req)
 }
 
-func (f *filterPlugin) methodAllowed(method string) bool {
+func (f *filterPlugin) methodAllowed(method string) error {
 	for _, m := range f.blockedMethods {
 		if m.matches(method) {
-			return false
+			return &methodBlockedError{method: method, error: m.err}
 		}
 	}
 	if len(f.allowedMethods) > 0 {
 		for _, m := range f.allowedMethods {
 			if m.matches(method) {
-				return true
+				return nil // explicitly allowed
 			}
 		}
-		return false
+		return &methodBlockedError{method: method}
 	}
-	return true
+	return nil // allowed
+}
+
+type jsonRPCResponse struct {
+	Version string        `json:"jsonrpc"`
+	Error   *JSONRPCError `json:"error,omitempty"`
+	ID      *string       `json:"id"`
 }
 
 func (f *filterPlugin) reject(rw http.ResponseWriter) {
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
 	rw.WriteHeader(f.blockStatusCode)
-	//nolint:gosec // G705 - blockResponseBodyBytes is a trusted config value.
-	_, _ = rw.Write(f.blockResponseBodyBytes)
+
+	_ = json.NewEncoder(rw).Encode(&jsonRPCResponse{
+		Version: jsonRPCVersion,
+		Error: mergeErr(f.blockError,
+			defaultBlockErrorCode, defaultBlockErrorMessage),
+	})
 }
 
 func (f *filterPlugin) badRequest(rw http.ResponseWriter) {
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
-	rw.WriteHeader(http.StatusBadRequest)
-	_, _ = rw.Write(badRequestBodyBytes)
+	rw.WriteHeader(f.badRequestStatusCode)
+
+	_ = json.NewEncoder(rw).Encode(&jsonRPCResponse{
+		Version: jsonRPCVersion,
+		Error: mergeErr(f.badRequestError,
+			defaultBadRequestCode, defaultBadRequestMessage),
+	})
 }
 
 func (f *filterPlugin) evaluate(r io.Reader) error {
@@ -386,8 +444,8 @@ func (f *filterPlugin) evaluateObject(dec *json.Decoder) error {
 		}
 
 		found = true
-		if !f.methodAllowed(method) {
-			return &methodBlockedError{method: method}
+		if err = f.methodAllowed(method); err != nil {
+			return err
 		}
 	}
 
@@ -470,4 +528,14 @@ func skipCompound(dec *json.Decoder, opening json.Delim) error {
 	}
 
 	return nil
+}
+
+func mergeErr(er *JSONRPCError, defaultCode int, defaultMessage string) *JSONRPCError {
+	if er.Code == 0 {
+		er.Code = defaultCode
+	}
+	if er.Message == "" {
+		er.Message = defaultMessage
+	}
+	return er
 }

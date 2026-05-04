@@ -44,8 +44,10 @@ func TestNew(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "invalid blocked regex",
-			config:  &Config{BlockedMethods: []string{"regex:"}},
+			name: "invalid blocked regex",
+			config: &Config{
+				BlockedMethods: []BlockedMethod{{Pattern: "regex:"}},
+			},
 			wantErr: true,
 		},
 		{
@@ -54,23 +56,62 @@ func TestNew(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "unsupported blocked glob",
-			config:  &Config{BlockedMethods: []string{"a*b*c"}},
+			name: "unsupported blocked glob",
+			config: &Config{
+				BlockedMethods: []BlockedMethod{{Pattern: "a*b*c"}},
+			},
 			wantErr: true,
 		},
 		{
-			name:    "block status code too low",
-			config:  &Config{BlockedMethods: []string{"debug_*"}, BlockStatusCode: 200},
+			name: "block status code too low",
+			config: &Config{
+				BlockedMethods:  []BlockedMethod{{Pattern: "debug_*"}},
+				BlockStatusCode: 200,
+			},
 			wantErr: true,
 		},
 		{
-			name:    "block status code too high",
-			config:  &Config{BlockedMethods: []string{"debug_*"}, BlockStatusCode: 600},
+			name: "block status code too high",
+			config: &Config{
+				BlockedMethods:  []BlockedMethod{{Pattern: "debug_*"}},
+				BlockStatusCode: 600,
+			},
 			wantErr: true,
 		},
 		{
-			name:    "valid blocklist only",
-			config:  &Config{BlockedMethods: []string{"debug_*"}},
+			name: "bad request status code too low",
+			config: &Config{
+				BlockedMethods:       []BlockedMethod{{Pattern: "debug_*"}},
+				BadRequestStatusCode: 200,
+			},
+			wantErr: true,
+		},
+		{
+			name: "bad request status code too high",
+			config: &Config{
+				BlockedMethods:       []BlockedMethod{{Pattern: "debug_*"}},
+				BadRequestStatusCode: 600,
+			},
+			wantErr: true,
+		},
+		{
+			name: "valid blocklist only",
+			config: &Config{
+				BlockedMethods: []BlockedMethod{{Pattern: "debug_*"}},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid blocklist with error",
+			config: &Config{
+				BlockedMethods: []BlockedMethod{{
+					Pattern: "debug_*",
+					Error: JSONRPCError{
+						Code:    -12345,
+						Message: "error message",
+					},
+				}},
+			},
 			wantErr: false,
 		},
 		{
@@ -81,7 +122,9 @@ func TestNew(t *testing.T) {
 		{
 			name: "valid block and allow",
 			config: &Config{
-				BlockedMethods: []string{"eth_sendRawTransaction"},
+				BlockedMethods: []BlockedMethod{
+					{Pattern: "eth_sendRawTransaction"},
+				},
 				AllowedMethods: []string{"eth_*"},
 			},
 			wantErr: false,
@@ -178,7 +221,7 @@ func TestServeHTTP(t *testing.T) {
 		// Blocklist
 		{
 			name:   "blocklist exact block",
-			config: &Config{BlockedMethods: []string{"debug_traceTransaction"}},
+			config: &Config{BlockedMethods: []BlockedMethod{{Pattern: "debug_traceTransaction"}}},
 			req: request{
 				httpMethod: http.MethodPost,
 				body:       `{"jsonrpc":"2.0","method":"debug_traceTransaction","id":1}`,
@@ -189,7 +232,7 @@ func TestServeHTTP(t *testing.T) {
 		},
 		{
 			name:   "blocklist exact allow",
-			config: &Config{BlockedMethods: []string{"debug_traceTransaction"}},
+			config: &Config{BlockedMethods: []BlockedMethod{{Pattern: "debug_traceTransaction"}}},
 			req: request{
 				httpMethod: http.MethodPost,
 				body:       `{"jsonrpc":"2.0","method":"eth_call","id":1}`,
@@ -200,7 +243,7 @@ func TestServeHTTP(t *testing.T) {
 		},
 		{
 			name:   "blocklist prefix blocks",
-			config: &Config{BlockedMethods: []string{"debug_*"}},
+			config: &Config{BlockedMethods: []BlockedMethod{{Pattern: "debug_*"}}},
 			req: request{
 				httpMethod: http.MethodPost,
 				body:       `{"jsonrpc":"2.0","method":"debug_traceCall","id":1}`,
@@ -210,7 +253,7 @@ func TestServeHTTP(t *testing.T) {
 		},
 		{
 			name:   "blocklist prefix allows non-match",
-			config: &Config{BlockedMethods: []string{"debug_*"}},
+			config: &Config{BlockedMethods: []BlockedMethod{{Pattern: "debug_*"}}},
 			req: request{
 				httpMethod: http.MethodPost,
 				body:       `{"jsonrpc":"2.0","method":"eth_call","id":1}`,
@@ -220,7 +263,7 @@ func TestServeHTTP(t *testing.T) {
 		},
 		{
 			name:   "blocklist suffix blocks",
-			config: &Config{BlockedMethods: []string{"*_admin"}},
+			config: &Config{BlockedMethods: []BlockedMethod{{Pattern: "*_admin"}}},
 			req: request{
 				httpMethod: http.MethodPost,
 				body:       `{"jsonrpc":"2.0","method":"eth_admin","id":1}`,
@@ -230,7 +273,7 @@ func TestServeHTTP(t *testing.T) {
 		},
 		{
 			name:   "blocklist suffix allows non-match",
-			config: &Config{BlockedMethods: []string{"*_admin"}},
+			config: &Config{BlockedMethods: []BlockedMethod{{Pattern: "*_admin"}}},
 			req: request{
 				httpMethod: http.MethodPost,
 				body:       `{"jsonrpc":"2.0","method":"eth_call","id":1}`,
@@ -240,7 +283,7 @@ func TestServeHTTP(t *testing.T) {
 		},
 		{
 			name:   "blocklist contains blocks",
-			config: &Config{BlockedMethods: []string{"*debug*"}},
+			config: &Config{BlockedMethods: []BlockedMethod{{Pattern: "*debug*"}}},
 			req: request{
 				httpMethod: http.MethodPost,
 				body:       `{"jsonrpc":"2.0","method":"eth_debug_trace","id":1}`,
@@ -249,8 +292,10 @@ func TestServeHTTP(t *testing.T) {
 			wantNextCalled: false,
 		},
 		{
-			name:   "blocklist regex blocks",
-			config: &Config{BlockedMethods: []string{"regex:debug_.*"}},
+			name: "blocklist regex blocks",
+			config: &Config{BlockedMethods: []BlockedMethod{
+				{Pattern: "regex:debug_.*"},
+			}},
 			req: request{
 				httpMethod: http.MethodPost,
 				body:       `{"jsonrpc":"2.0","method":"debug_traceBlock","id":1}`,
@@ -260,7 +305,7 @@ func TestServeHTTP(t *testing.T) {
 		},
 		{
 			name:   "blocklist regex auto-anchor prevents partial match",
-			config: &Config{BlockedMethods: []string{"regex:debug"}},
+			config: &Config{BlockedMethods: []BlockedMethod{{Pattern: "regex:debug"}}},
 			req: request{
 				httpMethod: http.MethodPost,
 				body:       `{"jsonrpc":"2.0","method":"not_debug","id":1}`,
@@ -316,7 +361,7 @@ func TestServeHTTP(t *testing.T) {
 		{
 			name: "block takes precedence over allow",
 			config: &Config{
-				BlockedMethods: []string{"eth_sendRawTransaction"},
+				BlockedMethods: []BlockedMethod{{Pattern: "eth_sendRawTransaction"}},
 				AllowedMethods: []string{"eth_*"},
 			},
 			req: request{
@@ -329,7 +374,7 @@ func TestServeHTTP(t *testing.T) {
 		{
 			name: "allowed method not in blocklist passes",
 			config: &Config{
-				BlockedMethods: []string{"eth_sendRawTransaction"},
+				BlockedMethods: []BlockedMethod{{Pattern: "eth_sendRawTransaction"}},
 				AllowedMethods: []string{"eth_*"},
 			},
 			req: request{
@@ -539,16 +584,58 @@ func TestServeHTTP(t *testing.T) {
 		{
 			name: "custom block status and body",
 			config: &Config{
-				BlockedMethods:    []string{"debug_*"},
-				BlockStatusCode:   429,
-				BlockResponseBody: `{"error":"blocked"}`,
+				BlockedMethods:  []BlockedMethod{{Pattern: "debug_*"}},
+				BlockStatusCode: 429,
+				BlockError: JSONRPCError{
+					Code:    1,
+					Message: "blocked",
+				},
 			},
 			req: request{
 				httpMethod: http.MethodPost,
 				body:       `{"jsonrpc":"2.0","method":"debug_trace","id":1}`,
 			},
 			wantStatus:     429,
-			wantBodySubstr: `{"error":"blocked"}`,
+			wantBodySubstr: `{"jsonrpc":"2.0","error":{"code":1,"message":"blocked"},"id":null}`,
+			wantNextCalled: false,
+		},
+		{
+			name: "custom block error with data field",
+			config: &Config{
+				BlockedMethods:  []BlockedMethod{{Pattern: "debug_*"}},
+				BlockStatusCode: 451,
+				BlockError: JSONRPCError{
+					Code:    -1,
+					Message: "policy",
+					Data:    "see docs",
+				},
+			},
+			req: request{
+				httpMethod: http.MethodPost,
+				body:       `{"jsonrpc":"2.0","method":"debug_trace","id":1}`,
+			},
+			wantStatus:     451,
+			wantBodySubstr: `"data":"see docs"`,
+			wantNextCalled: false,
+		},
+
+		// Custom bad-request status code and body
+		{
+			name: "custom bad request status and body",
+			config: &Config{
+				AllowedMethods:       []string{"eth_*"},
+				BadRequestStatusCode: 422,
+				BadRequestError: JSONRPCError{
+					Code:    2,
+					Message: "bad",
+				},
+			},
+			req: request{
+				httpMethod: http.MethodPost,
+				body:       `{not json}`,
+			},
+			wantStatus:     422,
+			wantBodySubstr: `{"jsonrpc":"2.0","error":{"code":2,"message":"bad"},"id":null}`,
 			wantNextCalled: false,
 		},
 
@@ -600,12 +687,12 @@ func TestServeHTTP(t *testing.T) {
 			wantNextCalled: true,
 		},
 
-		// RestrictMethods mode
+		// RestrictHTTPMethods mode
 		{
-			name: "RestrictMethods rejects OPTIONS",
+			name: "RestrictHTTPMethods rejects OPTIONS",
 			config: &Config{
-				AllowedMethods:  []string{"eth_*"},
-				RestrictMethods: true,
+				AllowedMethods:      []string{"eth_*"},
+				RestrictHTTPMethods: true,
 			},
 			req: request{
 				httpMethod: http.MethodOptions,
@@ -614,10 +701,10 @@ func TestServeHTTP(t *testing.T) {
 			wantNextCalled: false,
 		},
 		{
-			name: "RestrictMethods rejects GET",
+			name: "RestrictHTTPMethods rejects GET",
 			config: &Config{
-				AllowedMethods:  []string{"eth_*"},
-				RestrictMethods: true,
+				AllowedMethods:      []string{"eth_*"},
+				RestrictHTTPMethods: true,
 			},
 			req: request{
 				httpMethod: http.MethodGet,
@@ -626,10 +713,10 @@ func TestServeHTTP(t *testing.T) {
 			wantNextCalled: false,
 		},
 		{
-			name: "RestrictMethods allows POST",
+			name: "RestrictHTTPMethods allows POST",
 			config: &Config{
-				AllowedMethods:  []string{"eth_*"},
-				RestrictMethods: true,
+				AllowedMethods:      []string{"eth_*"},
+				RestrictHTTPMethods: true,
 			},
 			req: request{
 				httpMethod: http.MethodPost,
@@ -639,10 +726,10 @@ func TestServeHTTP(t *testing.T) {
 			wantNextCalled: true,
 		},
 		{
-			name: "RestrictMethods ignores PassthroughHTTPMethods",
+			name: "RestrictHTTPMethods ignores PassthroughHTTPMethods",
 			config: &Config{
 				AllowedMethods:         []string{"eth_*"},
-				RestrictMethods:        true,
+				RestrictHTTPMethods:    true,
 				PassthroughHTTPMethods: []string{"GET", "OPTIONS"},
 			},
 			req: request{
@@ -676,7 +763,7 @@ func TestServeHTTP(t *testing.T) {
 		// Unicode escapes
 		{
 			name:   "unicode-escaped method key",
-			config: &Config{BlockedMethods: []string{"debug_trace"}},
+			config: &Config{BlockedMethods: []BlockedMethod{{Pattern: "debug_trace"}}},
 			req: request{
 				httpMethod: http.MethodPost,
 				body:       `{"jsonrpc":"2.0","\u006dethod":"debug_trace","id":1}`,
@@ -686,7 +773,7 @@ func TestServeHTTP(t *testing.T) {
 		},
 		{
 			name:   "unicode-escaped method value",
-			config: &Config{BlockedMethods: []string{"debug_trace"}},
+			config: &Config{BlockedMethods: []BlockedMethod{{Pattern: "debug_trace"}}},
 			req: request{
 				httpMethod: http.MethodPost,
 				body:       `{"jsonrpc":"2.0","method":"debug_\u0074race","id":1}`,
@@ -698,7 +785,7 @@ func TestServeHTTP(t *testing.T) {
 		// Content-Type does not affect inspection
 		{
 			name:   "non-JSON content-type still inspected",
-			config: &Config{BlockedMethods: []string{"debug_trace"}},
+			config: &Config{BlockedMethods: []BlockedMethod{{Pattern: "debug_trace"}}},
 			req: request{
 				httpMethod:  http.MethodPost,
 				body:        `{"jsonrpc":"2.0","method":"debug_trace","id":1}`,
@@ -890,14 +977,14 @@ func BenchmarkRegexMatcher(b *testing.B) {
 
 func BenchmarkBlockAndAllow(b *testing.B) {
 	h := newBenchPlugin(b, &Config{
-		BlockedMethods: []string{"eth_sendRawTransaction"},
+		BlockedMethods: []BlockedMethod{{Pattern: "eth_sendRawTransaction"}},
 		AllowedMethods: []string{"eth_*"},
 	})
 	benchServeHTTP(b, h, singleSmall)
 }
 
 func BenchmarkRejected(b *testing.B) {
-	h := newBenchPlugin(b, &Config{BlockedMethods: []string{"eth_call"}})
+	h := newBenchPlugin(b, &Config{BlockedMethods: []BlockedMethod{{Pattern: "eth_call"}}})
 	benchServeHTTP(b, h, singleSmall)
 }
 
