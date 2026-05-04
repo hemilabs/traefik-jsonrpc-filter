@@ -125,7 +125,7 @@ jobs:
         run: go test -v -run Integration -count=1 ./...
 
       - name: "Traefik logs"
-        if: failure()
+        if: always()
         run: docker compose logs
         working-directory: example
 
