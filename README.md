@@ -79,7 +79,7 @@ The response body sent to clients has the shape:
 Batches are inspected element-by-element. The plugin operates **fail-closed**: if any element matches a blocked
 pattern (or, in allowlist mode, matches no allowed pattern), the entire batch is rejected.
 
-Notes:
+**Notes:**
 
 - The rejection response is a **single** JSON-RPC error object containing the id of the first offending element.
   This is not a fully spec-compliant batch response (the spec calls for an array with one entry per request), but it
@@ -135,8 +135,8 @@ Supported pattern types:
 | Contains | `*debug*`                         | `special_debug_trace`, `my_debug_call`, … |
 | Regex    | `regex:app_(event\|estimateCost)` | `app_event`, `app_estimateCost`           |
 
-> **Note:** Regex patterns are automatically anchored with `^` and `$` to
-> prevent accidental partial matches.
+> [!NOTE]
+> Regex patterns are automatically anchored with `^` and `$` to prevent accidental partial matches.
 
 ## License
 
