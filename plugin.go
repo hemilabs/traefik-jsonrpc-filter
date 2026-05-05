@@ -27,8 +27,9 @@ type JSONRPCError struct {
 }
 
 type BlockedMethod struct {
-	Pattern string        `json:"pattern"`
-	Error   *JSONRPCError `json:"error,omitempty"`
+	Pattern    string        `json:"pattern"`
+	StatusCode int           `json:"statusCode,omitempty"`
+	Error      *JSONRPCError `json:"error,omitempty"`
 }
 
 type Config struct {
@@ -103,8 +104,9 @@ var DefaultPassthroughHTTPMethods = []string{"OPTIONS"}
 
 // methodBlockedError is returned when a method is explicitly blocked by policy.
 type methodBlockedError struct {
-	method string
-	error  *JSONRPCError
+	method     string
+	statusCode int
+	error      *JSONRPCError
 }
 
 func (e *methodBlockedError) Error() string {
@@ -131,8 +133,9 @@ func CreateConfig() *Config {
 }
 
 type blockedMethodMatcher struct {
-	m   matcher
-	err *JSONRPCError
+	m          matcher
+	statusCode int
+	err        *JSONRPCError
 }
 
 type filterPlugin struct {
@@ -169,7 +172,7 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		if bm.Error != nil {
 			me = mergeErr(bm.Error, defaultBlockErrorCode, defaultBlockErrorMessage)
 		}
-		blockedMethods[i] = blockedMethodMatcher{m: m, err: me}
+		blockedMethods[i] = blockedMethodMatcher{m: m, statusCode: bm.StatusCode, err: me}
 	}
 
 	// Compile allowed method patterns.
@@ -276,7 +279,7 @@ func (f *filterPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		_ = req.Body.Close()
 		//nolint:errorlint // errors.As panics in Yaegi; use type assertion instead.
 		if e, ok := err.(*methodBlockedError); ok {
-			f.reject(rw, id, e.error)
+			f.reject(rw, id, e.statusCode, e.error)
 			return
 		}
 		f.badRequest(rw)
@@ -292,7 +295,11 @@ func (f *filterPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 func (f *filterPlugin) methodAllowed(method string) error {
 	for _, bm := range f.blockedMethods {
 		if bm.m.matches(method) {
-			return &methodBlockedError{method: method, error: bm.err}
+			return &methodBlockedError{
+				method:     method,
+				statusCode: bm.statusCode,
+				error:      bm.err,
+			}
 		}
 	}
 	if len(f.allowedMethods) > 0 {
@@ -312,14 +319,17 @@ type jsonRPCResponse struct {
 	ID      json.RawMessage `json:"id"`
 }
 
-func (f *filterPlugin) reject(rw http.ResponseWriter, id json.RawMessage, e *JSONRPCError) {
-	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
-	rw.WriteHeader(f.blockStatusCode)
-
-	// Use global default if unset.
+func (f *filterPlugin) reject(rw http.ResponseWriter, id json.RawMessage, statusCode int, e *JSONRPCError) {
+	// Use global defaults if unset.
+	if statusCode == 0 {
+		statusCode = f.blockStatusCode
+	}
 	if e == nil {
 		e = f.blockError
 	}
+
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	rw.WriteHeader(statusCode)
 
 	//nolint:errchkjson // There is no way for us to log an error from the plugin.
 	_ = json.NewEncoder(rw).Encode(&jsonRPCResponse{

@@ -52,10 +52,11 @@ At least one of `blockedMethods` or `allowedMethods` must be configured.
 
 Each entry in `blockedMethods` is an object:
 
-| Field     | Type           | Description                                                                       |
-|-----------|----------------|-----------------------------------------------------------------------------------|
-| `pattern` | `string`       | Pattern to match (see [Pattern Matching](#pattern-matching)).                     |
-| `error`   | `JSONRPCError` | Optional per-method JSON-RPC error override. Falls back to `blockError` if unset. |
+| Field        | Type           | Description                                                                       |
+|--------------|----------------|-----------------------------------------------------------------------------------|
+| `pattern`    | `string`       | Pattern to match (see [Pattern Matching](#pattern-matching)).                     |
+| `statusCode` | `int`          | HTTP status code override. Defaults to `blockStatusCode` if unset.                |
+| `error`      | `JSONRPCError` | Optional per-method JSON-RPC error override. Falls back to `blockError` if unset. |
 
 ### `JSONRPCError`
 
@@ -102,6 +103,8 @@ http:
               error:
                 code: -32000
                 message: "writes are disabled on this endpoint"
+            - pattern: "coffee_brew"
+              statusCode: 418
           allowedMethods:
             - "eth_*"
             - "net_*"

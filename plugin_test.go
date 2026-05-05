@@ -778,6 +778,28 @@ func TestServeHTTP(t *testing.T) {
 			wantBodySubstr: `"data":"see docs"`,
 			wantNextCalled: false,
 		},
+		{
+			name: "blocked method with error and status code",
+			config: &Config{
+				BlockedMethods: []BlockedMethod{{
+					// Per RFC 2324, any attempt to brew coffee with a teapot
+					// should result in the error code "418 I'm a teapot".
+					Pattern:    "coffee_brew",
+					StatusCode: http.StatusTeapot,
+					Error: &JSONRPCError{
+						Code:    http.StatusTeapot,
+						Message: "I'm a teapot",
+					},
+				}},
+			},
+			req: request{
+				httpMethod: http.MethodPost,
+				body:       `{"jsonrpc":"2.0","method":"coffee_brew","params":{"additions":["Whole-milk"]},"id":1}`,
+			},
+			wantStatus:     http.StatusTeapot,
+			wantBodySubstr: `"code":418,"message":"I'm a teapot"`,
+			wantNextCalled: false,
+		},
 
 		// Custom bad-request status code and body
 		{
