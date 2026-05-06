@@ -68,6 +68,45 @@ func TestCompilePattern(t *testing.T) {
 		}
 	})
 
+	t.Run("regex patterns", func(t *testing.T) {
+		t.Parallel()
+		tests := []struct {
+			pattern     string
+			wantPattern string
+		}{
+			// Regex patterns
+			{"regex:debug_.*", "^debug_.*$"},
+			{"regex:.*(debug|admin).*", "^.*(debug|admin).*$"},
+
+			// Regex patterns should be auto-anchored.
+			{"regex:test", "^test$"},
+			{"regex:^test", "^test$"},
+			{"regex:test$", "^test$"},
+			{"regex:^test$", "^test$"},
+
+			// Leading/trailing whitespace with anchor will still be auto-anchored.
+			{"regex: ^test", "^ ^test$"},
+			{"regex:test$ ", "^test$ $"},
+		}
+		for _, tt := range tests {
+			t.Run(tt.pattern, func(t *testing.T) {
+				m, err := compilePattern(tt.pattern)
+				if err != nil {
+					t.Fatalf("compilePattern(%q): %v", tt.pattern, err)
+				}
+				rm, ok := m.(*regexMatcher)
+				if !ok {
+					t.Fatalf("compilePattern(%q): got %T, want regexMatcher",
+						tt.pattern, m)
+				}
+				if rm.re.String() != tt.wantPattern {
+					t.Errorf("compilePattern(%q): got regex %q, want %q",
+						tt.pattern, rm.re.String(), tt.wantPattern)
+				}
+			})
+		}
+	})
+
 	t.Run("errors", func(t *testing.T) {
 		t.Parallel()
 		tests := []struct {
