@@ -746,7 +746,7 @@ func TestServeHTTP(t *testing.T) {
 			config: &Config{
 				BlockedMethods:  []BlockedMethod{{Pattern: "debug_*"}},
 				BlockStatusCode: 429,
-				BlockError: JSONRPCError{
+				BlockError: &JSONRPCError{
 					Code:    1,
 					Message: "blocked",
 				},
@@ -764,7 +764,7 @@ func TestServeHTTP(t *testing.T) {
 			config: &Config{
 				BlockedMethods:  []BlockedMethod{{Pattern: "debug_*"}},
 				BlockStatusCode: 451,
-				BlockError: JSONRPCError{
+				BlockError: &JSONRPCError{
 					Code:    -1,
 					Message: "policy",
 					Data:    "see docs",
@@ -807,7 +807,7 @@ func TestServeHTTP(t *testing.T) {
 			config: &Config{
 				AllowedMethods:       []string{"eth_*"},
 				BadRequestStatusCode: 422,
-				BadRequestError: JSONRPCError{
+				BadRequestError: &JSONRPCError{
 					Code:    2,
 					Message: "bad",
 				},

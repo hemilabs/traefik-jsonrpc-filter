@@ -54,14 +54,14 @@ type Config struct {
 
 	// BlockError is the JSON-RPC error response used for rejected requests.
 	// This can be overridden per blocked method.
-	BlockError JSONRPCError `json:"blockError,omitempty"`
+	BlockError *JSONRPCError `json:"blockError,omitempty"`
 
 	// BadRequestStatusCode is the HTTP status code used for bad requests.
 	// Default: 400
 	BadRequestStatusCode int `json:"badRequestStatusCode,omitempty"`
 
 	// BadRequestError is the JSON-RPC error response used for bad requests.
-	BadRequestError JSONRPCError `json:"badRequestError,omitempty"`
+	BadRequestError *JSONRPCError `json:"badRequestError,omitempty"`
 
 	// MaxBatchSize is the maximum number of elements allowed in a JSON-RPC
 	// batch array. Requests exceeding this are rejected.
@@ -119,11 +119,11 @@ func CreateConfig() *Config {
 		MaxBodyBytes:         DefaultMaxBodyBytes,
 		BlockStatusCode:      DefaultBlockStatusCode,
 		BadRequestStatusCode: DefaultBadRequestStatusCode,
-		BlockError: JSONRPCError{
+		BlockError: &JSONRPCError{
 			Code:    defaultBlockErrorCode,
 			Message: defaultBlockErrorMessage,
 		},
-		BadRequestError: JSONRPCError{
+		BadRequestError: &JSONRPCError{
 			Code:    defaultBadRequestCode,
 			Message: defaultBadRequestMessage,
 		},
@@ -228,8 +228,8 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		maxBatchSize:           config.MaxBatchSize,
 		blockStatusCode:        config.BlockStatusCode,
 		badRequestStatusCode:   config.BadRequestStatusCode,
-		blockError:             mergeErr(&config.BlockError, defaultBlockErrorCode, defaultBlockErrorMessage),
-		badRequestError:        mergeErr(&config.BadRequestError, defaultBadRequestCode, defaultBadRequestMessage),
+		blockError:             mergeErr(config.BlockError, defaultBlockErrorCode, defaultBlockErrorMessage),
+		badRequestError:        mergeErr(config.BadRequestError, defaultBadRequestCode, defaultBadRequestMessage),
 		passthroughHTTPMethods: passthrough,
 	}, nil
 }
@@ -625,6 +625,12 @@ func skipCompound(dec *json.Decoder, opening json.Delim) error {
 }
 
 func mergeErr(er *JSONRPCError, defaultCode int, defaultMessage string) *JSONRPCError {
+	if er == nil {
+		return &JSONRPCError{
+			Code:    defaultCode,
+			Message: defaultMessage,
+		}
+	}
 	if er.Code == 0 {
 		er.Code = defaultCode
 	}
