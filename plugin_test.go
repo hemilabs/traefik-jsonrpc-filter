@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1044,21 +1045,13 @@ func TestCreateConfig(t *testing.T) {
 		t.Errorf("MaxBatchSize = %d, want %d",
 			cfg.MaxBatchSize, DefaultMaxBatchSize)
 	}
-	if cfg.BlockError.Code != defaultBlockErrorCode {
-		t.Errorf("BlockError.Code = %d, want %d",
-			cfg.BlockError.Code, defaultBlockErrorCode)
+	if !reflect.DeepEqual(cfg.BlockError, defaultBlockError) {
+		t.Errorf("BlockError = %#+v, want %#+v",
+			cfg.BlockError, defaultBlockError)
 	}
-	if cfg.BlockError.Message != defaultBlockErrorMessage {
-		t.Errorf("BlockError.Message = %q, want %q",
-			cfg.BlockError.Message, defaultBlockErrorMessage)
-	}
-	if cfg.BadRequestError.Code != defaultBadRequestCode {
-		t.Errorf("BadRequestError.Code = %d, want %d",
-			cfg.BadRequestError.Code, defaultBadRequestCode)
-	}
-	if cfg.BadRequestError.Message != defaultBadRequestMessage {
-		t.Errorf("BadRequestError.Message = %q, want %q",
-			cfg.BadRequestError.Message, defaultBadRequestMessage)
+	if !reflect.DeepEqual(cfg.BadRequestError, defaultBadReqError) {
+		t.Errorf("BadRequestError = %#+v, want %#+v",
+			cfg.BadRequestError, defaultBadReqError)
 	}
 	if len(cfg.PassthroughHTTPMethods) != len(DefaultPassthroughHTTPMethods) {
 		t.Errorf("PassthroughHTTPMethods len = %d, want %d",

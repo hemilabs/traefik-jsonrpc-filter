@@ -89,18 +89,24 @@ const (
 	DefaultBadRequestStatusCode int   = http.StatusBadRequest
 	DefaultMaxBatchSize         int   = 100
 
-	defaultBlockErrorCode    = -32601
-	defaultBlockErrorMessage = "method not allowed"
-	defaultBadRequestCode    = -32600
-	defaultBadRequestMessage = "invalid request"
-
 	maxMethodBytes = 256
 	maxIDBytes     = 256
 	maxNestDepth   = 64
 	maxGrowHint    = 64 << 10 // 64 KiB; buf grows organically beyond this
 )
 
-var DefaultPassthroughHTTPMethods = []string{"OPTIONS"}
+var (
+	DefaultPassthroughHTTPMethods = []string{"OPTIONS"}
+
+	defaultBlockError = &JSONRPCError{
+		Code:    -32601,
+		Message: "method not allowed",
+	}
+	defaultBadReqError = &JSONRPCError{
+		Code:    -32600,
+		Message: "invalid request",
+	}
+)
 
 // methodBlockedError is returned when a method is explicitly blocked by policy.
 type methodBlockedError struct {
@@ -116,17 +122,11 @@ func (e *methodBlockedError) Error() string {
 // CreateConfig returns the default Config. Called by Traefik.
 func CreateConfig() *Config {
 	return &Config{
-		MaxBodyBytes:         DefaultMaxBodyBytes,
-		BlockStatusCode:      DefaultBlockStatusCode,
-		BadRequestStatusCode: DefaultBadRequestStatusCode,
-		BlockError: &JSONRPCError{
-			Code:    defaultBlockErrorCode,
-			Message: defaultBlockErrorMessage,
-		},
-		BadRequestError: &JSONRPCError{
-			Code:    defaultBadRequestCode,
-			Message: defaultBadRequestMessage,
-		},
+		MaxBodyBytes:           DefaultMaxBodyBytes,
+		BlockStatusCode:        DefaultBlockStatusCode,
+		BadRequestStatusCode:   DefaultBadRequestStatusCode,
+		BlockError:             defaultBlockError,
+		BadRequestError:        defaultBadReqError,
 		MaxBatchSize:           DefaultMaxBatchSize,
 		PassthroughHTTPMethods: DefaultPassthroughHTTPMethods,
 	}
@@ -160,6 +160,10 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		return nil, fmt.Errorf("[%s] blockedMethods or allowedMethods must be configured", name)
 	}
 
+	// Merge defaults into block/bad request errors.
+	blockErr := mergeErr(config.BlockError, defaultBlockError)
+	badReqErr := mergeErr(config.BadRequestError, defaultBadReqError)
+
 	// Compile blocked method patterns.
 	blockedMethods := make([]blockedMethodMatcher, len(config.BlockedMethods))
 	for i, bm := range config.BlockedMethods {
@@ -168,11 +172,11 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 			return nil, fmt.Errorf("[%s] blockedMethods[%d] %q: %w",
 				name, i, bm.Pattern, err)
 		}
-		var me *JSONRPCError
-		if bm.Error != nil {
-			me = mergeErr(bm.Error, defaultBlockErrorCode, defaultBlockErrorMessage)
+		blockedMethods[i] = blockedMethodMatcher{
+			m:          m,
+			statusCode: bm.StatusCode,
+			err:        mergeErr(bm.Error, blockErr),
 		}
-		blockedMethods[i] = blockedMethodMatcher{m: m, statusCode: bm.StatusCode, err: me}
 	}
 
 	// Compile allowed method patterns.
@@ -186,6 +190,7 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		allowedMethods[i] = m
 	}
 
+	// Set defaults and validate the config.
 	if config.MaxBodyBytes == 0 {
 		config.MaxBodyBytes = DefaultMaxBodyBytes
 	}
@@ -228,8 +233,8 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		maxBatchSize:           config.MaxBatchSize,
 		blockStatusCode:        config.BlockStatusCode,
 		badRequestStatusCode:   config.BadRequestStatusCode,
-		blockError:             mergeErr(config.BlockError, defaultBlockErrorCode, defaultBlockErrorMessage),
-		badRequestError:        mergeErr(config.BadRequestError, defaultBadRequestCode, defaultBadRequestMessage),
+		blockError:             blockErr,
+		badRequestError:        badReqErr,
 		passthroughHTTPMethods: passthrough,
 	}, nil
 }
@@ -319,13 +324,15 @@ type jsonRPCResponse struct {
 	ID      json.RawMessage `json:"id"`
 }
 
-func (f *filterPlugin) reject(rw http.ResponseWriter, id json.RawMessage, statusCode int, e *JSONRPCError) {
+func (f *filterPlugin) reject(rw http.ResponseWriter, id json.RawMessage, statusCode int, err *JSONRPCError) {
 	// Use global defaults if unset.
+	// If the method was blocked, err will always be non-nil. In allow-mode,
+	// err will be nil when a method was not explicitly blocked or allowed.
 	if statusCode == 0 {
 		statusCode = f.blockStatusCode
 	}
-	if e == nil {
-		e = f.blockError
+	if err == nil {
+		err = f.blockError
 	}
 
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -334,7 +341,7 @@ func (f *filterPlugin) reject(rw http.ResponseWriter, id json.RawMessage, status
 	//nolint:errchkjson // There is no way for us to log an error from the plugin.
 	_ = json.NewEncoder(rw).Encode(&jsonRPCResponse{
 		Version: jsonRPCVersion,
-		Error:   e,
+		Error:   err,
 		ID:      id,
 	})
 }
@@ -624,18 +631,19 @@ func skipCompound(dec *json.Decoder, opening json.Delim) error {
 	return nil
 }
 
-func mergeErr(er *JSONRPCError, defaultCode int, defaultMessage string) *JSONRPCError {
-	if er == nil {
-		return &JSONRPCError{
-			Code:    defaultCode,
-			Message: defaultMessage,
-		}
+func mergeErr(err *JSONRPCError, def *JSONRPCError) *JSONRPCError {
+	if err == nil {
+		return def
 	}
-	if er.Code == 0 {
-		er.Code = defaultCode
+
+	if err.Code == 0 {
+		err.Code = def.Code
 	}
-	if er.Message == "" {
-		er.Message = defaultMessage
+	if err.Message == "" {
+		err.Message = def.Message
 	}
-	return er
+	// Note: if err.Data is nil, it is left as nil instead of copying
+	// the data value from default.
+
+	return err
 }
