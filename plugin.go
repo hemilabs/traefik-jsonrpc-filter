@@ -464,12 +464,6 @@ func (f *filterPlugin) evaluateObject(dec *json.Decoder) (json.RawMessage, error
 			}
 			method, ok := valTok.(string)
 			if !ok {
-				if d, ok := valTok.(json.Delim); ok {
-					// Value is an array or object; skip the compound body.
-					if err := skipCompound(dec, d); err != nil {
-						return id, fmt.Errorf("skip delim: %w", err)
-					}
-				}
 				return id, fmt.Errorf("expected string method value, got %T", valTok)
 			}
 
