@@ -90,6 +90,7 @@ func TestCompilePattern(t *testing.T) {
 		}
 		for _, tt := range tests {
 			t.Run(tt.pattern, func(t *testing.T) {
+				t.Parallel()
 				m, err := compilePattern(tt.pattern)
 				if err != nil {
 					t.Fatalf("compilePattern(%q): %v", tt.pattern, err)
