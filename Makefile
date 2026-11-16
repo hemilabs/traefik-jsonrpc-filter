@@ -5,7 +5,7 @@
 PROJECT_ROOT = $(abspath $(dir $(firstword $(MAKEFILE_LIST))))
 
 # renovate: datasource=github-releases depName=golangci/golangci-lint versioning=semver
-GOLANGCI_LINT_VERSION="v2.11.3"
+GOLANGCI_LINT_VERSION="v2.15.0"
 
 .PHONY: all
 all: tidy build lint test
