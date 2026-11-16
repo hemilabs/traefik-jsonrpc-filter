@@ -1387,10 +1387,10 @@ var reqTemplate = &http.Request{
 func benchServeHTTP(b *testing.B, h http.Handler, body string) {
 	b.Helper()
 	bodyBytes := []byte(body)
-	rw := newDiscardResponseWriter()
 	b.ResetTimer()
 
 	b.RunParallel(func(pb *testing.PB) {
+		rw := newDiscardResponseWriter()
 		for pb.Next() {
 			rw.reset()
 			req := *reqTemplate
@@ -1480,7 +1480,6 @@ func buildBatch(n int) string {
 
 func BenchmarkPassthrough(b *testing.B) {
 	h := newBenchPlugin(b, &Config{AllowedMethods: []string{"eth_*"}})
-	rw := newDiscardResponseWriter()
 	optReq := &http.Request{
 		Method: http.MethodOptions,
 		URL:    &url.URL{Path: "/"},
@@ -1490,6 +1489,7 @@ func BenchmarkPassthrough(b *testing.B) {
 	}
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
+		rw := newDiscardResponseWriter()
 		for pb.Next() {
 			rw.reset()
 			h.ServeHTTP(rw, optReq)
