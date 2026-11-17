@@ -75,18 +75,21 @@ func TestCompilePattern(t *testing.T) {
 			wantPattern string
 		}{
 			// Regex patterns
-			{"regex:debug_.*", "^debug_.*$"},
-			{"regex:.*(debug|admin).*", "^.*(debug|admin).*$"},
+			{"regex:debug_.*", "^(?:debug_.*)$"},
+			{"regex:.*(debug|admin).*", "^(?:.*(debug|admin).*)$"},
 
 			// Regex patterns should be auto-anchored.
-			{"regex:test", "^test$"},
-			{"regex:^test", "^test$"},
-			{"regex:test$", "^test$"},
-			{"regex:^test$", "^test$"},
+			{"regex:test", "^(?:test)$"},
+			{"regex:^test", "^(?:^test)$"},
+			{"regex:test$", "^(?:test$)$"},
+			{"regex:^test$", "^(?:^test$)$"},
+
+			// Top-level alternation is anchored as a whole.
+			{"regex:debug_.*|admin_.*", "^(?:debug_.*|admin_.*)$"},
 
 			// Leading/trailing whitespace with anchor will still be auto-anchored.
-			{"regex: ^test", "^ ^test$"},
-			{"regex:test$ ", "^test$ $"},
+			{"regex: ^test", "^(?: ^test)$"},
+			{"regex:test$ ", "^(?:test$ )$"},
 		}
 		for _, tt := range tests {
 			t.Run(tt.pattern, func(t *testing.T) {
@@ -115,6 +118,7 @@ func TestCompilePattern(t *testing.T) {
 		}{
 			{"regex:"},
 			{"regex:[invalid"},
+			{"regex:a)|(b"},
 			{"foo*bar"},
 			{"*foo*bar"},
 			{"a*b*c"},
@@ -204,6 +208,14 @@ func TestMatchBypass(t *testing.T) {
 		{"*_admin", "_admin_more", false},
 		{"regex:eth_(call|estimateGas)", "eth_call_extra", false},
 		{"regex:eth_(call|estimateGas)", "x_eth_call", false},
+
+		// Top-level alternation must be anchored on every branch.
+		{"regex:debug_.*|admin_.*", "admin_foo", true},
+		{"regex:debug_.*|admin_.*", "x_admin_foo", false},
+		{"regex:debug_.*|admin_.*", "x_debug_foo", false},
+		{"regex:eth_call|eth_chainId", "eth_callEvil", false},
+		{"regex:eth_call|eth_chainId", "x_eth_chainId", false},
+		{"regex:^eth_call|eth_chainId$", "eth_callEvil", false},
 
 		// Pure-symbol / control-character inputs.
 		{"eth_call", "\n", false},

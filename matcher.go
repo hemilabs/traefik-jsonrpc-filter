@@ -52,18 +52,21 @@ func compilePattern(raw string) (matcher, error) {
 			return nil, errors.New("empty regex pattern")
 		}
 
-		// Auto-anchor to prevent accidental partial matches.
-		//
-		// Security: "debug" must not match "not_debug" unless the pattern
-		// explicitly allows it, e.g. ".*debug.*".
-		if expr[0] != '^' {
-			expr = "^" + expr
-		}
-		if expr[len(expr)-1] != '$' {
-			expr = expr + "$"
+		// Compile the expression on its own first, so that an expression
+		// with unbalanced groups (e.g. "a)|(b") cannot escape the anchoring
+		// group below.
+		if _, err := regexp.Compile(expr); err != nil {
+			return nil, fmt.Errorf("invalid regex %q: %w", raw, err)
 		}
 
-		re, err := regexp.Compile(expr)
+		// Auto-anchor the whole expression to prevent partial matches.
+		//
+		// Security: "debug" must not match "not_debug" unless the pattern
+		// explicitly allows it, e.g. ".*debug.*". The expression is wrapped
+		// in a group so that the anchors apply to every top-level
+		// alternation branch: "debug_.*|admin_.*" must not match
+		// "x_admin_foo".
+		re, err := regexp.Compile("^(?:" + expr + ")$")
 		if err != nil {
 			return nil, fmt.Errorf("invalid regex %q: %w", raw, err)
 		}

@@ -136,7 +136,8 @@ Supported pattern types:
 | Regex    | `regex:app_(event\|estimateCost)` | `app_event`, `app_estimateCost`           |
 
 > [!NOTE]
-> Regex patterns are automatically anchored with `^` and `$` to prevent accidental partial matches.
+> Regex patterns are automatically anchored as `^(?:<expr>)$` to prevent accidental partial matches. The anchors
+> apply to the whole expression, so `regex:debug_.*|admin_.*` matches `admin_foo` but not `x_admin_foo`.
 
 ## License
 
