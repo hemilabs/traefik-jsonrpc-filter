@@ -279,6 +279,43 @@ func TestServeHTTP(t *testing.T) {
 			wantNextCalled: true,
 		},
 		{
+			name:   "OPTIONS passthrough with body rejected",
+			config: &Config{AllowedMethods: []string{"eth_call"}},
+			req: request{
+				httpMethod: http.MethodOptions,
+				body:       `{"jsonrpc":"2.0","method":"debug_traceTransaction","id":1}`,
+			},
+			wantStatus:     http.StatusBadRequest,
+			wantBodySubstr: `"code":-32600`,
+			wantNextCalled: false,
+		},
+		{
+			name:   "OPTIONS passthrough with unknown-length body rejected",
+			config: &Config{AllowedMethods: []string{"eth_call"}},
+			req: request{
+				httpMethod:    http.MethodOptions,
+				body:          `{"jsonrpc":"2.0","method":"debug_traceTransaction","id":1}`,
+				contentLength: -1, // e.g. Transfer-Encoding: chunked
+			},
+			wantStatus:     http.StatusBadRequest,
+			wantBodySubstr: `"code":-32600`,
+			wantNextCalled: false,
+		},
+		{
+			name: "custom passthrough GET with body rejected",
+			config: &Config{
+				AllowedMethods:         []string{"eth_call"},
+				PassthroughHTTPMethods: []string{"GET"},
+			},
+			req: request{
+				httpMethod: http.MethodGet,
+				body:       `{"jsonrpc":"2.0","method":"debug_traceTransaction","id":1}`,
+			},
+			wantStatus:     http.StatusBadRequest,
+			wantBodySubstr: `"code":-32600`,
+			wantNextCalled: false,
+		},
+		{
 			name:   "GET rejected",
 			config: &Config{AllowedMethods: []string{"eth_call"}},
 			req: request{
@@ -1118,7 +1155,7 @@ func TestServeHTTP(t *testing.T) {
 			}
 			req := httptest.NewRequestWithContext(t.Context(), tt.req.httpMethod, "/", body)
 
-			if tt.req.contentLength > 0 {
+			if tt.req.contentLength != 0 {
 				req.ContentLength = tt.req.contentLength
 			}
 			if tt.req.contentType != "" {
@@ -1858,6 +1895,13 @@ func TestIntegration(t *testing.T) {
 			name:       "http/OPTIONS_passthrough",
 			httpMethod: http.MethodOptions,
 			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "http/OPTIONS_with_body_rejected",
+			httpMethod: http.MethodOptions,
+			body:       `{"jsonrpc":"2.0","method":"debug_traceTransaction","id":1}`,
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "-32600",
 		},
 
 		// Edge cases

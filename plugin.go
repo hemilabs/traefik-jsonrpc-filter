@@ -76,7 +76,9 @@ type Config struct {
 	// PassthroughHTTPMethods is a list of HTTP methods that bypass inspection
 	// and are passed directly to the next handler. POST requests will always
 	// be inspected. If a request method is not POST and is not listed, an
-	// HTTP 405 Method Not Allowed response will be returned.
+	// HTTP 405 Method Not Allowed response will be returned. Passthrough
+	// requests with a body are rejected as bad requests, as the body is not
+	// inspected.
 	// Ignored when RestrictHTTPMethods is true.
 	//
 	// Default: ["OPTIONS"] (preserves CORS preflight)
@@ -281,6 +283,13 @@ func (f *filterPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			rw.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
+		// Passthrough requests are not inspected, so they must not carry a
+		// body: upstreams such as go-ethereum execute a JSON-RPC body
+		// regardless of the HTTP method.
+		if !bodyEmpty(req.Body) {
+			f.badRequest(rw)
+			return
+		}
 		// Passthrough request as-is.
 		f.next.ServeHTTP(rw, req)
 		return
@@ -331,6 +340,18 @@ func (f *filterPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	req.Body = io.NopCloser(bytes.NewReader(buf.Bytes()))
 	req.ContentLength = int64(buf.Len())
 	f.next.ServeHTTP(rw, req)
+}
+
+// bodyEmpty reports whether body contains no data. It reads at most one byte
+// rather than trusting Content-Length, which is unknown (-1) for chunked
+// requests.
+func bodyEmpty(body io.Reader) bool {
+	if body == nil {
+		return true
+	}
+	var b [1]byte
+	_, err := io.ReadFull(body, b[:])
+	return errors.Is(err, io.EOF)
 }
 
 func (f *filterPlugin) methodAllowed(method string) error {
