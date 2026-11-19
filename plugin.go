@@ -153,6 +153,9 @@ type filterPlugin struct {
 	maxBodyBytes           int64
 	maxBatchSize           int
 	passthroughHTTPMethods map[string]struct{}
+	// allowHeader is the value of the Allow response header sent with HTTP 405
+	// responses. Precomputed at construction (RFC 7231 section 6.5.5).
+	allowHeader string
 }
 
 func New(_ context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
@@ -160,13 +163,19 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		return nil, fmt.Errorf("[%s] blockedMethods or allowedMethods must be configured", name)
 	}
 
-	// Merge defaults into block/bad request errors.
-	blockErr := mergeErr(config.BlockError, defaultBlockError)
-	badReqErr := mergeErr(config.BadRequestError, defaultBadReqError)
+	// Build config (apply defaults, validate, etc.)
+	config, err := buildConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("[%s] %w", name, err)
+	}
 
 	// Compile blocked method patterns.
 	blockedMethods := make([]blockedMethodMatcher, len(config.BlockedMethods))
 	for i, bm := range config.BlockedMethods {
+		if bm.StatusCode != 0 && (bm.StatusCode < 400 || bm.StatusCode > 599) {
+			return nil, fmt.Errorf("[%s] blockedMethods[%d].statusCode must be 4xx or 5xx, got %d",
+				name, i, bm.StatusCode)
+		}
 		m, err := compilePattern(bm.Pattern)
 		if err != nil {
 			return nil, fmt.Errorf("[%s] blockedMethods[%d] %q: %w",
@@ -175,7 +184,7 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		blockedMethods[i] = blockedMethodMatcher{
 			m:          m,
 			statusCode: bm.StatusCode,
-			err:        mergeErr(bm.Error, blockErr),
+			err:        mergeErr(bm.Error, config.BlockError),
 		}
 	}
 
@@ -190,37 +199,20 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		allowedMethods[i] = m
 	}
 
-	// Set defaults and validate the config.
-	if config.MaxBodyBytes == 0 {
-		config.MaxBodyBytes = DefaultMaxBodyBytes
-	}
-	if config.BlockStatusCode == 0 {
-		config.BlockStatusCode = DefaultBlockStatusCode
-	}
-	if config.BlockStatusCode < 400 || config.BlockStatusCode > 599 {
-		return nil, fmt.Errorf("[%s] blockStatusCode must be 4xx or 5xx, got %d",
-			name, config.BlockStatusCode)
-	}
-	if config.BadRequestStatusCode == 0 {
-		config.BadRequestStatusCode = DefaultBadRequestStatusCode
-	}
-	if bsc := config.BadRequestStatusCode; bsc < 400 || bsc > 599 {
-		return nil, fmt.Errorf("[%s] badRequestStatusCode must be 4xx or 5xx, got %d",
-			name, bsc)
-	}
-	if config.MaxBatchSize == 0 {
-		config.MaxBatchSize = DefaultMaxBatchSize
-	}
-
+	// Build passthrough and allowHTTPMethods map
 	var passthrough map[string]struct{}
+	allowHTTPMethods := []string{http.MethodPost}
 	if !config.RestrictHTTPMethods {
-		passthroughMethods := DefaultPassthroughHTTPMethods
-		if len(config.PassthroughHTTPMethods) > 0 {
-			passthroughMethods = config.PassthroughHTTPMethods
-		}
-		passthrough = make(map[string]struct{}, len(passthroughMethods))
-		for _, m := range passthroughMethods {
-			passthrough[strings.ToUpper(m)] = struct{}{}
+		passthrough = make(map[string]struct{}, len(config.PassthroughHTTPMethods))
+		for _, m := range config.PassthroughHTTPMethods {
+			u := strings.ToUpper(m)
+			if _, dup := passthrough[u]; dup {
+				continue
+			}
+			passthrough[u] = struct{}{}
+			if u != http.MethodPost {
+				allowHTTPMethods = append(allowHTTPMethods, u)
+			}
 		}
 	}
 
@@ -233,15 +225,59 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		maxBatchSize:           config.MaxBatchSize,
 		blockStatusCode:        config.BlockStatusCode,
 		badRequestStatusCode:   config.BadRequestStatusCode,
-		blockError:             blockErr,
-		badRequestError:        badReqErr,
+		blockError:             config.BlockError,
+		badRequestError:        config.BadRequestError,
 		passthroughHTTPMethods: passthrough,
+		allowHeader:            strings.Join(allowHTTPMethods, ", "),
+	}, nil
+}
+
+func buildConfig(config *Config) (*Config, error) {
+	maxBodyBytes := orDefault(config.MaxBodyBytes, DefaultMaxBodyBytes)
+	if maxBodyBytes < 1 {
+		return nil, fmt.Errorf("maxBodyBytes must be >= 1: %d", maxBodyBytes)
+	}
+
+	blockStatusCode := orDefault(config.BlockStatusCode, DefaultBlockStatusCode)
+	if blockStatusCode < 400 || blockStatusCode > 599 {
+		return nil, fmt.Errorf("blockStatusCode must be 4xx or 5xx, got %d", blockStatusCode)
+	}
+
+	badRequestStatusCode := orDefault(config.BadRequestStatusCode, DefaultBadRequestStatusCode)
+	if badRequestStatusCode < 400 || badRequestStatusCode > 599 {
+		return nil, fmt.Errorf("badRequestStatusCode must be 4xx or 5xx, got %d", badRequestStatusCode)
+	}
+
+	maxBatchSize := orDefault(config.MaxBatchSize, DefaultMaxBatchSize)
+	if maxBatchSize < 1 {
+		return nil, fmt.Errorf("maxBatchSize must be >= 1: %d", maxBatchSize)
+	}
+
+	passthroughMethods := config.PassthroughHTTPMethods
+	if len(passthroughMethods) == 0 {
+		// Use defaults when empty. To restrict HTTP methods (no passthrough),
+		// config should set Config.RestrictHTTPMethods
+		passthroughMethods = DefaultPassthroughHTTPMethods
+	}
+
+	return &Config{
+		BlockedMethods:         config.BlockedMethods,
+		AllowedMethods:         config.AllowedMethods,
+		MaxBodyBytes:           maxBodyBytes,
+		BlockStatusCode:        blockStatusCode,
+		BlockError:             mergeErr(config.BlockError, defaultBlockError),
+		BadRequestStatusCode:   badRequestStatusCode,
+		BadRequestError:        mergeErr(config.BadRequestError, defaultBadReqError),
+		MaxBatchSize:           maxBatchSize,
+		RestrictHTTPMethods:    config.RestrictHTTPMethods,
+		PassthroughHTTPMethods: passthroughMethods,
 	}, nil
 }
 
 func (f *filterPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
 		if _, ok := f.passthroughHTTPMethods[req.Method]; !ok {
+			rw.Header().Set("Allow", f.allowHeader)
 			rw.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
@@ -629,15 +665,23 @@ func mergeErr(err *JSONRPCError, def *JSONRPCError) *JSONRPCError {
 	if err == nil {
 		return def
 	}
-
-	if err.Code == 0 {
-		err.Code = def.Code
+	// Return a fresh struct so we never mutate the caller's *JSONRPCError.
+	out := *err
+	if out.Code == 0 {
+		out.Code = def.Code
 	}
-	if err.Message == "" {
-		err.Message = def.Message
+	if out.Message == "" {
+		out.Message = def.Message
 	}
 	// Note: if err.Data is nil, it is left as nil instead of copying
 	// the data value from default.
+	return &out
+}
 
-	return err
+func orDefault[T comparable](a T, b T) T {
+	var zero T
+	if a == zero {
+		return b
+	}
+	return a
 }
