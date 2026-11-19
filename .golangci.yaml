@@ -50,6 +50,8 @@ linters:
     - "usetesting"
     - "whitespace"
   settings:
+    goconst:
+      ignore-tests: true
     nolintlint:
       # Require an explanation after each nolint directive.
       # Explanation format example: '//nolint:ineffassign // Explanation goes here.'

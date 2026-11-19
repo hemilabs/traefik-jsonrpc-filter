@@ -1,6 +1,6 @@
 services:
   traefik:
-    image: traefik:v3.6.12@sha256:171c9c3565b29f6c133f1c1b43c5d4e5853415198e9e1078c001f8702ff66aec
+    image: traefik:v3.7.19@sha256:aa942a00bce033c909bf1f7e861d93761be4b31a035f10d2410d33e38a8f41cf
     ports:
       - "3000:3000"
     volumes:
@@ -10,4 +10,4 @@ services:
       - ..:/plugins-local/src/github.com/hemilabs/traefik-jsonrpc-filter:ro
 
   whoami:
-    image: traefik/whoami:v1.11.0@sha256:200689790a0a0ea48ca45992e0450bc26ccab5307375b41c84dfc4f2475937ab
+    image: traefik/whoami:v1.12.0@sha256:c4717a8d1f0134a7444e24f881160e033991f23027c6c5a9a3f8fd22e70d1d44
