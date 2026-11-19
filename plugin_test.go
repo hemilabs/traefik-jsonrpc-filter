@@ -96,6 +96,46 @@ func TestNew(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "negative max body bytes",
+			config: &Config{
+				BlockedMethods: []BlockedMethod{{Pattern: "debug_*"}},
+				MaxBodyBytes:   -1,
+			},
+			wantErr: true,
+		},
+		{
+			name: "negative max batch size",
+			config: &Config{
+				BlockedMethods: []BlockedMethod{{Pattern: "debug_*"}},
+				MaxBatchSize:   -1,
+			},
+			wantErr: true,
+		},
+		{
+			name: "blocked method status code too low",
+			config: &Config{
+				BlockedMethods: []BlockedMethod{{Pattern: "debug_*", StatusCode: 399}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "blocked method status code too high",
+			config: &Config{
+				BlockedMethods: []BlockedMethod{{Pattern: "debug_*", StatusCode: 600}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "blocked method status code at bounds",
+			config: &Config{
+				BlockedMethods: []BlockedMethod{
+					{Pattern: "debug_*", StatusCode: 400},
+					{Pattern: "admin_*", StatusCode: 599},
+				},
+			},
+			wantErr: false,
+		},
+		{
 			name: "valid blocklist only",
 			config: &Config{
 				BlockedMethods: []BlockedMethod{{Pattern: "debug_*"}},
@@ -142,6 +182,71 @@ func TestNew(t *testing.T) {
 	}
 }
 
+func TestNewDoesNotMutateConfig(t *testing.T) {
+	t.Parallel()
+
+	// newConfig returns a config with zero-value fields that New fills with
+	// defaults, and partially populated JSON-RPC errors that New merges with
+	// the default errors.
+	newConfig := func() *Config {
+		return &Config{
+			BlockedMethods: []BlockedMethod{
+				{Pattern: "debug_*", Error: &JSONRPCError{Message: "debug disabled"}},
+				{Pattern: "admin_*"},
+			},
+			BlockError:             &JSONRPCError{Code: -32000},
+			BadRequestError:        &JSONRPCError{Message: "bad"},
+			PassthroughHTTPMethods: []string{"options"},
+		}
+	}
+
+	cfg := newConfig()
+	h, err := New(t.Context(), http.NotFoundHandler(), cfg, "test")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// reflect.DeepEqual follows pointers, so this also covers the
+	// caller-owned *JSONRPCError values.
+	if !reflect.DeepEqual(cfg, newConfig()) {
+		t.Error("New mutated the caller's config or its JSON-RPC errors")
+	}
+
+	// Defaults still take effect in the running plugin.
+	tests := []struct {
+		body       string
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			body:       `{"jsonrpc":"2.0","method":"debug_trace","id":1}`,
+			wantStatus: DefaultBlockStatusCode,
+			wantBody:   `{"jsonrpc":"2.0","error":{"code":-32000,"message":"debug disabled"},"id":1}`,
+		},
+		{
+			body:       `{"jsonrpc":"2.0","method":"admin_peers","id":2}`,
+			wantStatus: DefaultBlockStatusCode,
+			wantBody:   `{"jsonrpc":"2.0","error":{"code":-32000,"message":"method not allowed"},"id":2}`,
+		},
+		{
+			body:       `{not json}`,
+			wantStatus: DefaultBadRequestStatusCode,
+			wantBody:   `{"jsonrpc":"2.0","error":{"code":-32600,"message":"bad"},"id":null}`,
+		},
+	}
+	for _, tt := range tests {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/",
+			strings.NewReader(tt.body))
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		if rr.Code != tt.wantStatus {
+			t.Errorf("%s: status = %d, want %d", tt.body, rr.Code, tt.wantStatus)
+		}
+		if got := strings.TrimSpace(rr.Body.String()); got != tt.wantBody {
+			t.Errorf("%s: body = %s, want %s", tt.body, got, tt.wantBody)
+		}
+	}
+}
+
 func TestServeHTTP(t *testing.T) {
 	t.Parallel()
 
@@ -158,6 +263,7 @@ func TestServeHTTP(t *testing.T) {
 		config         *Config
 		req            request
 		wantStatus     int
+		wantAllow      string // Allow response header; empty asserts it is absent
 		wantBodySubstr string // substring in response body
 		wantNextCalled bool
 		wantNextBody   string // body forwarded to next handler (only checked if wantNextCalled)
@@ -179,6 +285,20 @@ func TestServeHTTP(t *testing.T) {
 				httpMethod: http.MethodGet,
 			},
 			wantStatus:     http.StatusMethodNotAllowed,
+			wantAllow:      "POST, OPTIONS",
+			wantNextCalled: false,
+		},
+		{
+			name: "Allow header deduplicates custom passthrough methods",
+			config: &Config{
+				AllowedMethods:         []string{"eth_call"},
+				PassthroughHTTPMethods: []string{"get", "OPTIONS", "post", "GET", "options", "POST"},
+			},
+			req: request{
+				httpMethod: http.MethodPut,
+			},
+			wantStatus:     http.StatusMethodNotAllowed,
+			wantAllow:      "POST, GET, OPTIONS",
 			wantNextCalled: false,
 		},
 		{
@@ -881,6 +1001,7 @@ func TestServeHTTP(t *testing.T) {
 				httpMethod: http.MethodOptions,
 			},
 			wantStatus:     http.StatusMethodNotAllowed,
+			wantAllow:      "POST",
 			wantNextCalled: false,
 		},
 		{
@@ -893,6 +1014,7 @@ func TestServeHTTP(t *testing.T) {
 				httpMethod: http.MethodGet,
 			},
 			wantStatus:     http.StatusMethodNotAllowed,
+			wantAllow:      "POST",
 			wantNextCalled: false,
 		},
 		{
@@ -919,6 +1041,7 @@ func TestServeHTTP(t *testing.T) {
 				httpMethod: http.MethodGet,
 			},
 			wantStatus:     http.StatusMethodNotAllowed,
+			wantAllow:      "POST",
 			wantNextCalled: false,
 		},
 
@@ -940,6 +1063,7 @@ func TestServeHTTP(t *testing.T) {
 				httpMethod: http.MethodGet,
 			},
 			wantStatus:     http.StatusMethodNotAllowed,
+			wantAllow:      "POST, OPTIONS",
 			wantNextCalled: false,
 		},
 
@@ -1007,6 +1131,9 @@ func TestServeHTTP(t *testing.T) {
 			if rr.Code != tt.wantStatus {
 				t.Errorf("status = %d, want %d; body = %s",
 					rr.Code, tt.wantStatus, rr.Body.String())
+			}
+			if got := rr.Header().Get("Allow"); got != tt.wantAllow {
+				t.Errorf("Allow = %q, want %q", got, tt.wantAllow)
 			}
 			if tt.wantBodySubstr != "" && !strings.Contains(rr.Body.String(), tt.wantBodySubstr) {
 				t.Errorf("body = %q, want substring %q",
