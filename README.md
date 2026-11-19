@@ -13,8 +13,7 @@ requests by method name.
 - **Custom JSON-RPC errors.** Configure JSON-RPC error code, message, and data globally or per-blocked-method.
 - **Configurable controls.** Configure the maximum request body size, max batch size, optionally restrict to POST-only
   or configure which HTTP methods pass through uninspected (e.g. `OPTIONS` for CORS).
-- **Fail closed.** Malformed JSON requests, missing `method` fields, oversized bodies, and deeply nested payloads are
-  rejected.
+- **Fail closed.** Malformed JSON requests, missing `method` fields, and oversized bodies are rejected.
 
 ## Installation
 

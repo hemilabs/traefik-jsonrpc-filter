@@ -833,8 +833,8 @@ func TestServeHTTP(t *testing.T) {
 			wantNextCalled: false,
 		},
 		{
-			// Hits skipValue Token error path when a non-method field has
-			// a malformed value.
+			// Hits the skipValue error path when a non-method field has a
+			// malformed value.
 			name:   "non-method field has malformed value",
 			config: &Config{AllowedMethods: []string{"eth_*"}},
 			req: request{
@@ -847,7 +847,7 @@ func TestServeHTTP(t *testing.T) {
 		},
 
 		{
-			// Hits readID Token error (truncated body after id key).
+			// Hits the readID error path (truncated body after id key).
 			name:   "truncated body after id key",
 			config: &Config{AllowedMethods: []string{"eth_*"}},
 			req: request{
@@ -859,7 +859,7 @@ func TestServeHTTP(t *testing.T) {
 			wantNextCalled: false,
 		},
 		{
-			// Hits readID skipCompound error path with malformed array id.
+			// Hits the readID error path with a malformed array id.
 			name:   "id is malformed compound (unclosed array)",
 			config: &Config{AllowedMethods: []string{"eth_*"}},
 			req: request{
@@ -1367,6 +1367,11 @@ func TestServeHTTPResponseID(t *testing.T) {
 			wantIDJSON: `"id":null`,
 		},
 		{
+			name:       "id surrounded by whitespace echoed",
+			body:       "{\"jsonrpc\":\"2.0\",\"method\":\"debug_x\",\"id\" : \n\t 7 }",
+			wantIDJSON: `"id":7`,
+		},
+		{
 			name:       "case-variant id key echoed",
 			body:       `{"jsonrpc":"2.0","method":"debug_x","Id":7}`,
 			wantIDJSON: `"id":7`,
@@ -1405,6 +1410,27 @@ func TestServeHTTPResponseID(t *testing.T) {
 			name:       "string id at max length preserved",
 			body:       `{"jsonrpc":"2.0","method":"debug_x","id":"` + strings.Repeat("a", 256) + `"}`,
 			wantIDJSON: `"id":"` + strings.Repeat("a", 256) + `"`,
+		},
+		{
+			// Raw literal at maxRawIDBytes, decoding to exactly maxIDBytes.
+			name:       "escaped string id at max decoded length preserved",
+			body:       `{"jsonrpc":"2.0","method":"debug_x","id":"` + strings.Repeat(`\u0061`, 256) + `"}`,
+			wantIDJSON: `"id":"` + strings.Repeat("a", 256) + `"`,
+		},
+		{
+			name:       "escaped string id over max decoded length dropped to null",
+			body:       `{"jsonrpc":"2.0","method":"debug_x","id":"` + strings.Repeat(`\u0061`, 257) + `"}`,
+			wantIDJSON: `"id":null`,
+		},
+		{
+			name:       "string id with invalid UTF-8 re-encoded",
+			body:       "{\"jsonrpc\":\"2.0\",\"method\":\"debug_x\",\"id\":\"a\xffb\"}",
+			wantIDJSON: "\"id\":\"a\uFFFDb\"",
+		},
+		{
+			name:       "string id with HTML characters escaped",
+			body:       `{"jsonrpc":"2.0","method":"debug_x","id":"<a>&"}`,
+			wantIDJSON: `"id":"\u003ca\u003e\u0026"`,
 		},
 		{
 			name:       "oversized numeric id dropped to null",
@@ -1531,43 +1557,6 @@ func TestServeHTTPBadRequestIDNull(t *testing.T) {
 					rr.Body.String(), `"id":null`)
 			}
 		})
-	}
-}
-
-func TestServeHTTPDeepNesting(t *testing.T) {
-	t.Parallel()
-
-	cfg := &Config{AllowedMethods: []string{"eth_*"}}
-	nh := &recordHandler{}
-	h, err := New(t.Context(), nh, cfg, "test")
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-
-	// Build JSON with nesting deeper than maxNestDepth inside a skipped value.
-	// {"params": [[[[...depth 70...]]], "method":"eth_call","id":1}
-	var b strings.Builder
-	b.WriteString(`{"params":`)
-	depth := maxNestDepth + 10
-	for range depth {
-		b.WriteByte('[')
-	}
-	b.WriteString("1")
-	for range depth {
-		b.WriteByte(']')
-	}
-	b.WriteString(`,"method":"eth_call","id":1}`)
-
-	rr := httptest.NewRecorder()
-	req := httptest.NewRequestWithContext(t.Context(),
-		http.MethodPost, "/", strings.NewReader(b.String()))
-	h.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Errorf("deep nesting: status = %d, want %d", rr.Code, http.StatusBadRequest)
-	}
-	if nh.called {
-		t.Error("deep nesting: next handler should not be called")
 	}
 }
 

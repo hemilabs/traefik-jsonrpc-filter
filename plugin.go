@@ -93,7 +93,6 @@ const (
 
 	maxMethodBytes = 256
 	maxIDBytes     = 256
-	maxNestDepth   = 64
 	maxGrowHint    = 64 << 10 // 64 KiB; buf grows organically beyond this
 )
 
@@ -420,7 +419,6 @@ func (f *filterPlugin) badRequest(rw http.ResponseWriter) {
 
 func (f *filterPlugin) evaluate(r io.Reader) (json.RawMessage, error) {
 	dec := json.NewDecoder(r)
-	dec.UseNumber()
 
 	tok, err := dec.Token()
 	if err != nil {
@@ -579,112 +577,52 @@ func (f *filterPlugin) evaluateObject(dec *json.Decoder) (json.RawMessage, error
 	return id, nil
 }
 
-// readID reads the next JSON value as a JSON-RPC 2.0 id and returns its raw
-// JSON representation. Per the JSON-RPC 2.0 spec, id must be a string, number,
-// or null. Compound (object/array) and oversized values are skipped and
-// reported as a nil id (which marshals as null in the response).
+// maxRawIDBytes is the longest string id literal that can decode to at most
+// maxIDBytes (each decoded byte takes at most 6 bytes, as in \u0061).
+const maxRawIDBytes = 6*maxIDBytes + 2
+
+// readID reads the next JSON value as a JSON-RPC 2.0 id. Values that are not a
+// string, number, or null, or are oversized, are returned as a nil id.
+//
+// Decode returns exactly one valid JSON value without surrounding whitespace,
+// so its first byte determines its type, and compound values are never decoded.
 func readID(dec *json.Decoder) (json.RawMessage, error) {
-	tok, err := dec.Token()
-	if err != nil {
+	var raw json.RawMessage
+	if err := dec.Decode(&raw); err != nil {
 		return nil, err
 	}
-	switch v := tok.(type) {
-	case string:
-		if len(v) > maxIDBytes {
+	switch c := raw[0]; {
+	case c == '"': // string
+		if len(raw) > maxRawIDBytes {
 			return nil, nil
 		}
-		// Re-encode through json.Marshal to handle escaping correctly.
-		b, err := json.Marshal(v)
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil || len(s) > maxIDBytes {
+			return nil, nil //nolint:nilerr // safe fallback to null id
+		}
+		// Re-encode to replace invalid UTF-8 and escape HTML characters.
+		b, err := json.Marshal(s)
 		if err != nil {
 			return nil, nil //nolint:nilerr // safe fallback to null id
 		}
 		return b, nil
-	case json.Number:
-		s := string(v)
-		if len(s) > maxIDBytes {
+	case c == '-' || ('0' <= c && c <= '9'): // number
+		if len(raw) > maxIDBytes {
 			return nil, nil
 		}
-		return []byte(s), nil
-	case nil:
-		return []byte("null"), nil
-	case json.Delim:
-		// Object or array; not a valid JSON-RPC id. Skip and drop.
-		if err := skipCompound(dec, v); err != nil {
-			return nil, err
-		}
-		return nil, nil
-	default:
-		// Booleans and any unexpected types: not a valid id, drop.
+		return raw, nil
+	case c == 'n': // null
+		return raw, nil
+	default: // object, array, or boolean
 		return nil, nil
 	}
 }
 
+// skipValue skips the next JSON value in a single Decode call, as each call
+// into the standard library is costly under Yaegi.
 func skipValue(dec *json.Decoder) error {
-	tok, err := dec.Token()
-	if err != nil {
-		return err
-	}
-	d, ok := tok.(json.Delim)
-	if !ok {
-		return nil
-	}
-	return skipCompound(dec, d)
-}
-
-func skipCompound(dec *json.Decoder, opening json.Delim) error {
-	// Iterative depth-tracked skip to avoid stack exhaustion on deep nesting.
-	type frame struct {
-		isObject bool
-		needVal  bool // for objects: alternates key / value
-	}
-	stack := make([]frame, 0, 8)
-	stack = append(stack, frame{isObject: opening == '{'})
-
-	for len(stack) > 0 {
-		if len(stack) > maxNestDepth {
-			return fmt.Errorf("nesting depth exceeds %d", maxNestDepth)
-		}
-
-		top := &stack[len(stack)-1]
-
-		if !dec.More() {
-			// Consume closing delimiter.
-			tok, err := dec.Token()
-			if err != nil {
-				return err
-			}
-			d, ok := tok.(json.Delim)
-			if !ok {
-				return fmt.Errorf("expected closing delimiter, got %T", tok)
-			}
-			if (top.isObject && d != '}') || (!top.isObject && d != ']') {
-				return fmt.Errorf("mismatched closing delimiter %q", d)
-			}
-			stack = stack[:len(stack)-1]
-			continue
-		}
-
-		tok, err := dec.Token()
-		if err != nil {
-			return err
-		}
-
-		// In objects, every other token is a key (string) that we just skip.
-		if top.isObject && !top.needVal {
-			top.needVal = true
-			continue
-		}
-		if top.isObject {
-			top.needVal = false
-		}
-
-		// If the value is a nested compound, push it onto the stack.
-		if d, ok := tok.(json.Delim); ok {
-			stack = append(stack, frame{isObject: d == '{'})
-		}
-	}
-
-	return nil
+	var v json.RawMessage
+	return dec.Decode(&v)
 }
 
 func mergeErr(err *JSONRPCError, def *JSONRPCError) *JSONRPCError {
