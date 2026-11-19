@@ -49,7 +49,7 @@ type Config struct {
 	MaxBodyBytes int64 `json:"maxBodyBytes,omitempty"`
 
 	// BlockStatusCode is the HTTP status code used for rejected requests.
-	// This cab be overridden per blocked method. Default: 403
+	// This can be overridden per blocked method. Default: 403
 	BlockStatusCode int `json:"blockStatusCode,omitempty"`
 
 	// BlockError is the JSON-RPC error response used for rejected requests.
