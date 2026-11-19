@@ -74,22 +74,25 @@ func TestCompilePattern(t *testing.T) {
 			pattern     string
 			wantPattern string
 		}{
-			// Regex patterns
-			{"regex:debug_.*", "^(?:debug_.*)$"},
-			{"regex:.*(debug|admin).*", "^(?:.*(debug|admin).*)$"},
+			// Regex patterns are normalised by regexp/syntax before anchoring.
+			{"regex:debug_.*", "^(?:(?-s:debug_.*))$"},
+			{"regex:.*(debug|admin).*", "^(?:(?-s:.*(debug|admin).*))$"},
 
 			// Regex patterns should be auto-anchored.
 			{"regex:test", "^(?:test)$"},
-			{"regex:^test", "^(?:^test)$"},
-			{"regex:test$", "^(?:test$)$"},
-			{"regex:^test$", "^(?:^test$)$"},
+			{"regex:^test", `^(?:\Atest)$`},
+			{"regex:test$", "^(?:(?-m:test$))$"},
+			{"regex:^test$", `^(?:(?-m:\Atest$))$`},
 
 			// Top-level alternation is anchored as a whole.
-			{"regex:debug_.*|admin_.*", "^(?:debug_.*|admin_.*)$"},
+			{"regex:debug_.*|admin_.*", "^(?:(?-s:debug_.*|admin_.*))$"},
+
+			// An unterminated quoted region is closed before anchoring.
+			{`regex:\Qeth_call$`, `^(?:eth_call\$)$`},
 
 			// Leading/trailing whitespace with anchor will still be auto-anchored.
-			{"regex: ^test", "^(?: ^test)$"},
-			{"regex:test$ ", "^(?:test$ )$"},
+			{"regex: ^test", `^(?: \Atest)$`},
+			{"regex:test$ ", "^(?:(?-m:test$ ))$"},
 		}
 		for _, tt := range tests {
 			t.Run(tt.pattern, func(t *testing.T) {
@@ -216,6 +219,12 @@ func TestMatchBypass(t *testing.T) {
 		{"regex:eth_call|eth_chainId", "eth_callEvil", false},
 		{"regex:eth_call|eth_chainId", "x_eth_chainId", false},
 		{"regex:^eth_call|eth_chainId$", "eth_callEvil", false},
+
+		// Unterminated quoted regions are literal to the end of the pattern.
+		{`regex:\Qeth_call$`, "eth_call$", true},
+		{`regex:\Qeth_call$`, "eth_call", false},
+		{`regex:\Qeth_call$`, "eth_call$x", false},
+		{`regex:\Qeth_call|eth_chainId`, "eth_chainId", false},
 
 		// Pure-symbol / control-character inputs.
 		{"eth_call", "\n", false},

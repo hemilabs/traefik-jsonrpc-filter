@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"regexp/syntax"
 	"strings"
 )
 
@@ -52,10 +53,12 @@ func compilePattern(raw string) (matcher, error) {
 			return nil, errors.New("empty regex pattern")
 		}
 
-		// Compile the expression on its own first, so that an expression
-		// with unbalanced groups (e.g. "a)|(b") cannot escape the anchoring
-		// group below.
-		if _, err := regexp.Compile(expr); err != nil {
+		// Parse the expression on its own and wrap its normalised form, so
+		// that the expression cannot escape the anchoring group below, e.g.
+		// via unbalanced groups ("a)|(b") or an unterminated quoted region
+		// ("\Qeth_call$").
+		parsed, err := syntax.Parse(expr, syntax.Perl)
+		if err != nil {
 			return nil, fmt.Errorf("invalid regex %q: %w", raw, err)
 		}
 
@@ -66,7 +69,7 @@ func compilePattern(raw string) (matcher, error) {
 		// in a group so that the anchors apply to every top-level
 		// alternation branch: "debug_.*|admin_.*" must not match
 		// "x_admin_foo".
-		re, err := regexp.Compile("^(?:" + expr + ")$")
+		re, err := regexp.Compile("^(?:" + parsed.String() + ")$")
 		if err != nil {
 			return nil, fmt.Errorf("invalid regex %q: %w", raw, err)
 		}
