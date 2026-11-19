@@ -48,6 +48,9 @@ All configuration options with their defaults:
 
 At least one of `blockedMethods` or `allowedMethods` must be configured.
 
+Requests using a `passthroughHTTPMethods` method are not inspected, so they are rejected with `badRequestError` if they
+have a body. Upstreams such as go-ethereum execute a JSON-RPC body regardless of the HTTP method.
+
 ### `BlockedMethod`
 
 Each entry in `blockedMethods` is an object:
