@@ -87,7 +87,7 @@ jobs:
           go mod verify
 
       - name: "go test"
-        run: go test -coverprofile=coverage.out -covermode=atomic ./...
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
 
   integration:
     name: "Integration Test"

@@ -5,9 +5,9 @@ summary: "Allows filtering of JSON-RPC requests"
 
 testData:
   blockedMethods:
-    - method: "test_*"
-    - method: "admin_*"
-    - method: "example_method"
-    - method:  "regex:special_(method|function)"
+    - pattern: "test_*"
+    - pattern: "admin_*"
+    - pattern: "example_method"
+    - pattern: "regex:special_(method|function)"
   maxBodyBytes: 1048576
   blockStatusCode: 403

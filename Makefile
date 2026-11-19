@@ -28,7 +28,7 @@ build:
 
 .PHONY: test
 test:
-	go test -coverprofile=$(PROJECT_ROOT)/coverage.out -covermode=atomic ./...
+	go test -race -coverprofile=$(PROJECT_ROOT)/coverage.out -covermode=atomic ./...
 
 .PHONY: lint
 lint:
