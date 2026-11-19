@@ -508,8 +508,13 @@ func (f *filterPlugin) evaluateObject(dec *json.Decoder) (json.RawMessage, error
 			return id, fmt.Errorf("expected string key, got %T", keyTok)
 		}
 
-		switch key {
-		case "method":
+		// Match keys case-insensitively, as encoding/json does when upstreams
+		// such as go-ethereum decode the request into a struct, so that keys
+		// such as "Method" cannot hide the method from the filter. A second
+		// match is rejected as a duplicate field. strings.EqualFold matches
+		// the same keys as encoding/json for "method" and "id".
+		switch {
+		case strings.EqualFold(key, "method"):
 			if methodFound {
 				return id, errors.New("duplicate method field")
 			}
@@ -540,7 +545,7 @@ func (f *filterPlugin) evaluateObject(dec *json.Decoder) (json.RawMessage, error
 				return id, err
 			}
 
-		case "id":
+		case strings.EqualFold(key, "id"):
 			if idFound {
 				return id, errors.New("duplicate id field")
 			}

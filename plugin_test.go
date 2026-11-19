@@ -674,6 +674,75 @@ func TestServeHTTP(t *testing.T) {
 			wantNextCalled: false,
 		},
 
+		// Keys are matched case-insensitively, like encoding/json does when
+		// upstreams decode the request into a struct.
+		{
+			name:   "case-variant method key after method",
+			config: &Config{AllowedMethods: []string{"eth_*"}},
+			req: request{
+				httpMethod: http.MethodPost,
+				body:       `{"jsonrpc":"2.0","id":1,"method":"eth_chainId","Method":"debug_traceTransaction"}`,
+			},
+			wantStatus:     http.StatusBadRequest,
+			wantBodySubstr: "-32600",
+			wantNextCalled: false,
+		},
+		{
+			name:   "case-variant method key before method",
+			config: &Config{AllowedMethods: []string{"eth_*"}},
+			req: request{
+				httpMethod: http.MethodPost,
+				body:       `{"jsonrpc":"2.0","METHOD":"debug_traceTransaction","method":"eth_chainId","id":1}`,
+			},
+			wantStatus:     http.StatusBadRequest,
+			wantBodySubstr: "-32600",
+			wantNextCalled: false,
+		},
+		{
+			name:   "unicode-escaped case-variant method key",
+			config: &Config{AllowedMethods: []string{"eth_*"}},
+			req: request{
+				httpMethod: http.MethodPost,
+				body:       `{"jsonrpc":"2.0","method":"eth_chainId","\u004dethod":"debug_traceTransaction","id":1}`,
+			},
+			wantStatus:     http.StatusBadRequest,
+			wantBodySubstr: "-32600",
+			wantNextCalled: false,
+		},
+		{
+			name:   "case-variant method key alone is inspected",
+			config: &Config{BlockedMethods: []BlockedMethod{{Pattern: "debug_*"}}},
+			req: request{
+				httpMethod: http.MethodPost,
+				body:       `{"jsonrpc":"2.0","mEtHoD":"debug_traceTransaction","id":1}`,
+			},
+			wantStatus:     http.StatusForbidden,
+			wantBodySubstr: `"id":1`,
+			wantNextCalled: false,
+		},
+		{
+			name:   "case-variant method key in batch element",
+			config: &Config{AllowedMethods: []string{"eth_*"}},
+			req: request{
+				httpMethod: http.MethodPost,
+				body:       `[{"jsonrpc":"2.0","method":"eth_call","id":1},{"jsonrpc":"2.0","method":"eth_call","Method":"debug_trace","id":2}]`,
+			},
+			wantStatus:     http.StatusBadRequest,
+			wantBodySubstr: "-32600",
+			wantNextCalled: false,
+		},
+		{
+			name:   "case-variant id key duplicate",
+			config: &Config{AllowedMethods: []string{"eth_*"}},
+			req: request{
+				httpMethod: http.MethodPost,
+				body:       `{"jsonrpc":"2.0","id":1,"ID":2,"method":"eth_call"}`,
+			},
+			wantStatus:     http.StatusBadRequest,
+			wantBodySubstr: "-32600",
+			wantNextCalled: false,
+		},
+
 		// Trailing content -> 400
 		{
 			name:   "trailing content after object",
@@ -1298,6 +1367,11 @@ func TestServeHTTPResponseID(t *testing.T) {
 			wantIDJSON: `"id":null`,
 		},
 		{
+			name:       "case-variant id key echoed",
+			body:       `{"jsonrpc":"2.0","method":"debug_x","Id":7}`,
+			wantIDJSON: `"id":7`,
+		},
+		{
 			name:       "id appears before method",
 			body:       `{"id":7,"jsonrpc":"2.0","method":"debug_x"}`,
 			wantIDJSON: `"id":7`,
@@ -1850,6 +1924,13 @@ func TestIntegration(t *testing.T) {
 			name:       "invalid/trailing_content",
 			httpMethod: http.MethodPost,
 			body:       `{"jsonrpc":"2.0","method":"eth_call","id":1}{"extra":true}`,
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "-32600",
+		},
+		{
+			name:       "invalid/case_variant_method_key",
+			httpMethod: http.MethodPost,
+			body:       `{"jsonrpc":"2.0","id":1,"method":"eth_chainId","Method":"debug_traceTransaction"}`,
 			wantStatus: http.StatusBadRequest,
 			wantBody:   "-32600",
 		},
