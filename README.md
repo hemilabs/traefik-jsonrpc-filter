@@ -141,8 +141,11 @@ Supported pattern types:
 
 **Notes:**
 
-- Methods are matched as raw bytes after JSON decoding: matching is case-sensitive, and no Unicode normalisation or
-  trimming is performed. JSON escapes are decoded first, so `"debug_\u0074race"` is matched as `debug_trace`.
+- Methods are matched after JSON decoding, so `"debug_\u0074race"` is matched as `debug_trace`. No Unicode
+  normalisation or trimming is performed.
+- Exact and glob patterns compare raw bytes and are case-sensitive. Regex patterns use Go's
+  [`regexp` syntax](https://pkg.go.dev/regexp/syntax), which matches Unicode code points (e.g. `.` matches `é`) and
+  supports flags such as `(?i)` for case-insensitive matching.
 - Decoded method names may contain control characters, such as a NUL byte from `"\u0000"`. If an upstream treats
   method names as NUL-terminated strings, restrict allowed methods to a safe character set, e.g.
   `regex:[A-Za-z0-9_]+`.
