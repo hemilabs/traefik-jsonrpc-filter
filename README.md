@@ -139,6 +139,67 @@ Supported pattern types:
 > Regex patterns are automatically anchored as `^(?:<expr>)$` to prevent accidental partial matches. The anchors
 > apply to the whole expression, so `regex:debug_.*|admin_.*` matches `admin_foo` but not `x_admin_foo`.
 
+**Notes:**
+
+- Methods are matched as raw bytes after JSON decoding: matching is case-sensitive, and no Unicode normalisation or
+  trimming is performed. JSON escapes are decoded first, so `"debug_\u0074race"` is matched as `debug_trace`.
+- Decoded method names may contain control characters, such as a NUL byte from `"\u0000"`. If an upstream treats
+  method names as NUL-terminated strings, restrict allowed methods to a safe character set, e.g.
+  `regex:[A-Za-z0-9_]+`.
+- Lone UTF-16 surrogates (e.g. `"\uD83D"`) and invalid UTF-8 are replaced with U+FFFD before matching, while the
+  original bytes are forwarded unchanged. Upstreams using a JSON decoder that handles these differently than Go's
+  `encoding/json` may see a different method name than the filter did.
+- `*` and `**` match every method, including an empty method name.
+
+## Request Inspection
+
+The plugin only inspects the top-level `method` and `id` fields of each JSON-RPC request object. Other protocol-level
+validation, such as the `jsonrpc` version field or the shape of `params`, is left to the upstream. An empty method name
+(`""`) is treated like any other method: it is forwarded in blocklist-only mode unless blocked, and rejected in
+allowlist mode unless allowed.
+
+## Production Deployment
+
+The plugin cannot enforce read deadlines on the request body, and does not decompress request bodies. Configure
+Traefik accordingly when it is directly exposed to untrusted clients.
+
+### Timeouts
+
+Configure `respondingTimeouts` on the entry point to bound slow clients (slow-loris). Traefik defaults to
+`readTimeout: 60s` and `idleTimeout: 180s`; lower values are usually appropriate for JSON-RPC:
+
+```yaml
+# traefik.yml (static configuration)
+entryPoints:
+  websecure:
+    address: ":443"
+    transport:
+      respondingTimeouts:
+        readTimeout: "30s"
+        writeTimeout: "30s"
+        idleTimeout: "120s"
+```
+
+### Middleware Ordering
+
+Place cheap rejections, such as rate limiting, IP allowlists, and authentication, before `jsonrpc-filter`.
+
+The plugin does not decompress request bodies, so requests with a compressed body (e.g. `Content-Encoding: gzip`) fail
+JSON parsing and are rejected as bad requests. If a middleware before `jsonrpc-filter` decompresses request bodies,
+`maxBodyBytes` applies to the decompressed bytes, and that middleware must bound decompression itself.
+
+### Sizing
+
+Every inspected request body is buffered in memory, up to `maxBodyBytes`. Most JSON-RPC requests are well under 1 KiB,
+so lowering `maxBodyBytes` (e.g. to 64-256 KiB) and `maxBatchSize` (e.g. to 10-50) bounds per-request memory and
+upstream load. Set `restrictHTTPMethods: true` for endpoints that do not need to serve browser CORS preflight requests.
+
+### Observability
+
+The plugin does not produce logs or metrics. Use
+Traefik [access logs](https://doc.traefik.io/traefik/observe/logs-and-access-logs/)
+and [metrics](https://doc.traefik.io/traefik/observe/metrics/) to monitor rejected requests by status code.
+
 ## License
 
 The contents of this repository are distributed under the terms of the MIT License, except where otherwise noted.
