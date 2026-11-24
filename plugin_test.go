@@ -5,6 +5,7 @@
 package traefik_jsonrpc_filter
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -1290,6 +1291,32 @@ func TestCreateConfig(t *testing.T) {
 		t.Errorf("PassthroughHTTPMethods len = %d, want %d",
 			len(cfg.PassthroughHTTPMethods),
 			len(DefaultPassthroughHTTPMethods))
+	}
+}
+
+func TestCreateConfigNotShared(t *testing.T) {
+	t.Parallel()
+	// Snapshot as JSON, which deep-copies any values shared with the defaults.
+	want, err := json.Marshal(CreateConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = json.Unmarshal([]byte(`{
+		"blockError": {"code": -1, "message": "first"},
+		"badRequestError": {"code": -2, "message": "first"},
+		"passthroughHTTPMethods": ["GET"]
+	}`), CreateConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := json.Marshal(CreateConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(want) {
+		t.Errorf("CreateConfig() = %s, want %s", got, want)
 	}
 }
 

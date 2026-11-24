@@ -121,15 +121,20 @@ func (e *methodBlockedError) Error() string {
 }
 
 // CreateConfig returns the default Config. Called by Traefik.
+//
+// Traefik decodes configuration into the returned value in place, so it must
+// not share pointers or slices with the package defaults.
 func CreateConfig() *Config {
+	blockErr := *defaultBlockError
+	badReqErr := *defaultBadReqError
 	return &Config{
 		MaxBodyBytes:           DefaultMaxBodyBytes,
 		BlockStatusCode:        DefaultBlockStatusCode,
 		BadRequestStatusCode:   DefaultBadRequestStatusCode,
-		BlockError:             defaultBlockError,
-		BadRequestError:        defaultBadReqError,
+		BlockError:             &blockErr,
+		BadRequestError:        &badReqErr,
 		MaxBatchSize:           DefaultMaxBatchSize,
-		PassthroughHTTPMethods: DefaultPassthroughHTTPMethods,
+		PassthroughHTTPMethods: append([]string(nil), DefaultPassthroughHTTPMethods...),
 	}
 }
 
