@@ -52,6 +52,9 @@ linters:
   settings:
     goconst:
       ignore-tests: true
+    gomoddirectives:
+      # e2e/yaegi replaces the plugin module with the repository root.
+      replace-local: true
     nolintlint:
       # Require an explanation after each nolint directive.
       # Explanation format example: '//nolint:ineffassign // Explanation goes here.'
@@ -80,7 +83,7 @@ formatters:
         - "default"
         - "blank"
         - "dot"
-        - "localmodule"
+        - "prefix(github.com/hemilabs/traefik-jsonrpc-filter)"
       custom-order: true
   exclusions:
     paths:

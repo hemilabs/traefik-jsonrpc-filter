@@ -1611,21 +1611,27 @@ var reqTemplate = &http.Request{
 	Host:   "localhost",
 }
 
-func benchServeHTTP(b *testing.B, h http.Handler, body string) {
+func benchServeHTTP(b *testing.B, h http.Handler, body string, wantStatus int) {
 	b.Helper()
-	bodyBytes := []byte(body)
+	b.ReportAllocs()
 	b.ResetTimer()
 
 	b.RunParallel(func(pb *testing.PB) {
 		rw := newDiscardResponseWriter()
+		served := false
 		for pb.Next() {
 			rw.reset()
 			req := *reqTemplate
 			req.Body = io.NopCloser(strings.NewReader(body))
-			req.ContentLength = int64(len(bodyBytes))
+			req.ContentLength = int64(len(body))
 			h.ServeHTTP(rw, &req)
+			served = true
+		}
+		if served && rw.code != wantStatus {
+			b.Errorf("status = %d, want %d", rw.code, wantStatus)
 		}
 	})
+	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "req/s")
 }
 
 var (
@@ -1633,61 +1639,35 @@ var (
 	singleLarge = `{"jsonrpc":"2.0","method":"eth_call","params":["` + strings.Repeat("x", 4096) + `"],"id":1}`
 )
 
-func BenchmarkExactMatcher(b *testing.B) {
-	h := newBenchPlugin(b, &Config{AllowedMethods: []string{"eth_call"}})
-	benchServeHTTP(b, h, singleSmall)
-}
-
-func BenchmarkPrefixMatcher(b *testing.B) {
-	h := newBenchPlugin(b, &Config{AllowedMethods: []string{"eth_*"}})
-	benchServeHTTP(b, h, singleSmall)
-}
-
-func BenchmarkSuffixMatcher(b *testing.B) {
-	h := newBenchPlugin(b, &Config{AllowedMethods: []string{"*_call"}})
-	benchServeHTTP(b, h, singleSmall)
-}
-
-func BenchmarkContainsMatcher(b *testing.B) {
-	h := newBenchPlugin(b, &Config{AllowedMethods: []string{"*call*"}})
-	benchServeHTTP(b, h, singleSmall)
-}
-
-func BenchmarkRegexMatcher(b *testing.B) {
-	h := newBenchPlugin(b, &Config{AllowedMethods: []string{"regex:eth_(call|estimateGas|getBalance)"}})
-	benchServeHTTP(b, h, singleSmall)
-}
-
-func BenchmarkBlockAndAllow(b *testing.B) {
+func BenchmarkAllowed(b *testing.B) {
 	h := newBenchPlugin(b, &Config{
 		BlockedMethods: []BlockedMethod{{Pattern: "eth_sendRawTransaction"}},
 		AllowedMethods: []string{"eth_*"},
 	})
-	benchServeHTTP(b, h, singleSmall)
+	benchServeHTTP(b, h, singleSmall, http.StatusOK)
 }
 
 func BenchmarkRejected(b *testing.B) {
 	h := newBenchPlugin(b, &Config{BlockedMethods: []BlockedMethod{{Pattern: "eth_call"}}})
-	benchServeHTTP(b, h, singleSmall)
+	benchServeHTTP(b, h, singleSmall, http.StatusForbidden)
 }
 
 func BenchmarkLargeBody(b *testing.B) {
 	h := newBenchPlugin(b, &Config{AllowedMethods: []string{"eth_*"}})
-	benchServeHTTP(b, h, singleLarge)
+	benchServeHTTP(b, h, singleLarge, http.StatusOK)
 }
 
 func BenchmarkMethodFieldLast(b *testing.B) {
 	h := newBenchPlugin(b, &Config{AllowedMethods: []string{"eth_*"}})
 	body := `{"jsonrpc":"2.0","id":1,"params":["0x1","0x2","0x3"],"method":"eth_call"}`
-	benchServeHTTP(b, h, body)
+	benchServeHTTP(b, h, body, http.StatusOK)
 }
 
 func BenchmarkBatch(b *testing.B) {
 	for _, size := range []int{1, 5, 10, 50} {
 		b.Run(fmt.Sprintf("size=%d", size), func(b *testing.B) {
 			h := newBenchPlugin(b, &Config{AllowedMethods: []string{"eth_*"}})
-			body := buildBatch(size)
-			benchServeHTTP(b, h, body)
+			benchServeHTTP(b, h, buildBatch(size), http.StatusOK)
 		})
 	}
 }
@@ -1715,13 +1695,20 @@ func BenchmarkPassthrough(b *testing.B) {
 		Host:   "localhost",
 	}
 	b.ReportAllocs()
+	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		rw := newDiscardResponseWriter()
+		served := false
 		for pb.Next() {
 			rw.reset()
 			h.ServeHTTP(rw, optReq)
+			served = true
+		}
+		if served && rw.code != http.StatusOK {
+			b.Errorf("status = %d, want %d", rw.code, http.StatusOK)
 		}
 	})
+	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "req/s")
 }
 
 // Integration tests against a live Traefik instance.

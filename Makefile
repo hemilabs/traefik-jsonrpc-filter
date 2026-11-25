@@ -29,6 +29,12 @@ build:
 .PHONY: test
 test:
 	go test -race -coverprofile=$(PROJECT_ROOT)/coverage.out -covermode=atomic ./...
+	cd $(PROJECT_ROOT)/e2e/yaegi && go test -race ./...
+
+.PHONY: bench
+bench:
+	go test -run '^$$' -bench . -benchmem .
+	cd $(PROJECT_ROOT)/e2e/yaegi && go test -run '^$$' -bench . -benchmem .
 
 .PHONY: lint
 lint:
