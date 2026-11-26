@@ -312,6 +312,7 @@ func TestServeHTTP(t *testing.T) {
 		nilBody       bool
 		contentLength int64  // override Content-Length; 0 uses default from body
 		contentType   string // override Content-Type; empty uses default
+		header        http.Header
 	}
 
 	tests := []struct {
@@ -352,6 +353,36 @@ func TestServeHTTP(t *testing.T) {
 				httpMethod:    http.MethodOptions,
 				body:          `{"jsonrpc":"2.0","method":"debug_traceTransaction","id":1}`,
 				contentLength: -1, // e.g. Transfer-Encoding: chunked
+			},
+			wantStatus:     http.StatusBadRequest,
+			wantBodySubstr: `"code":-32600`,
+			wantNextCalled: false,
+		},
+		{
+			name: "custom passthrough GET WebSocket upgrade rejected",
+			config: &Config{
+				AllowedMethods:         []string{"eth_call"},
+				PassthroughHTTPMethods: []string{"GET"},
+			},
+			req: request{
+				httpMethod: http.MethodGet,
+				header: http.Header{
+					"Connection": {"Upgrade"},
+					"Upgrade":    {"websocket"},
+				},
+			},
+			wantStatus:     http.StatusBadRequest,
+			wantBodySubstr: `"code":-32600`,
+			wantNextCalled: false,
+		},
+		{
+			name: "custom passthrough CONNECT rejected",
+			config: &Config{
+				AllowedMethods:         []string{"eth_call"},
+				PassthroughHTTPMethods: []string{"CONNECT"},
+			},
+			req: request{
+				httpMethod: http.MethodConnect,
 			},
 			wantStatus:     http.StatusBadRequest,
 			wantBodySubstr: `"code":-32600`,
@@ -1285,6 +1316,9 @@ func TestServeHTTP(t *testing.T) {
 			}
 			if tt.req.contentType != "" {
 				req.Header.Set("Content-Type", tt.req.contentType)
+			}
+			for k, v := range tt.req.header {
+				req.Header[k] = v
 			}
 
 			rr := httptest.NewRecorder()
