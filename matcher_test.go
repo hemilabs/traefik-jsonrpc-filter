@@ -89,10 +89,6 @@ func TestCompilePattern(t *testing.T) {
 
 			// An unterminated quoted region is closed before anchoring.
 			{`regex:\Qeth_call$`, `^(?:eth_call\$)$`},
-
-			// Leading/trailing whitespace with anchor will still be auto-anchored.
-			{"regex: ^test", `^(?: \Atest)$`},
-			{"regex:test$ ", "^(?:(?-m:test$ ))$"},
 		}
 		for _, tt := range tests {
 			t.Run(tt.pattern, func(t *testing.T) {
@@ -119,6 +115,17 @@ func TestCompilePattern(t *testing.T) {
 		tests := []struct {
 			pattern string
 		}{
+			{""},
+			{" "},
+			{" debug_*"},
+			{"debug_* "},
+			{"eth_call\t"},
+			{"\neth_call"},
+			{" regex:debug_.*"},
+			{"regex: debug_.*"},
+			{"regex:debug_.* "},
+			{"regex: ^test"},
+			{"regex:test$ "},
 			{"regex:"},
 			{"regex:[invalid"},
 			{"regex:a)|(b"},
