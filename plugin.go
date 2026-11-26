@@ -303,8 +303,9 @@ func (f *filterPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		}
 		// Passthrough requests are not inspected, so they must not carry a
 		// body: upstreams such as go-ethereum execute a JSON-RPC body
-		// regardless of the HTTP method.
-		if !bodyEmpty(req) {
+		// regardless of the HTTP method. They also cannot open a
+		// connection whose traffic is never inspected.
+		if req.Method == http.MethodConnect || req.Header.Get("Upgrade") != "" || !bodyEmpty(req) {
 			f.badRequest(rw)
 			return
 		}
