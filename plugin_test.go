@@ -1642,6 +1642,37 @@ func TestServeHTTPBadRequestIDNull(t *testing.T) {
 	}
 }
 
+type unreadBody struct{ read bool }
+
+func (b *unreadBody) Read([]byte) (int, error) {
+	b.read = true
+	return 0, io.EOF
+}
+
+func TestServeHTTPRejectFalseBody(t *testing.T) {
+	t.Parallel()
+
+	h, err := New(t.Context(), http.NotFoundHandler(),
+		&Config{AllowedMethods: []string{"eth_*"}},
+		"test")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	body := &unreadBody{}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodOptions, "/", body)
+	req.ContentLength = 100
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+	if body.read {
+		t.Error("body was read")
+	}
+}
+
 // discardResponseWriter is a minimal http.ResponseWriter that records the
 // http header, and discards data written.
 type discardResponseWriter struct {

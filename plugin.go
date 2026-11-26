@@ -304,7 +304,7 @@ func (f *filterPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		// Passthrough requests are not inspected, so they must not carry a
 		// body: upstreams such as go-ethereum execute a JSON-RPC body
 		// regardless of the HTTP method.
-		if !bodyEmpty(req.Body) {
+		if !bodyEmpty(req) {
 			f.badRequest(rw)
 			return
 		}
@@ -360,15 +360,19 @@ func (f *filterPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	f.next.ServeHTTP(rw, req)
 }
 
-// bodyEmpty reports whether body contains no data. It reads at most one byte
-// rather than trusting Content-Length, which is unknown (-1) for chunked
-// requests.
-func bodyEmpty(body io.Reader) bool {
-	if body == nil {
+// bodyEmpty reports whether the request body contains no data. A positive
+// Content-Length is trusted without reading, so a client that withholds the
+// body cannot hold the request open. Otherwise it reads at most one byte, as
+// Content-Length is unknown (-1) for chunked requests.
+func bodyEmpty(req *http.Request) bool {
+	if req.ContentLength > 0 {
+		return false
+	}
+	if req.Body == nil {
 		return true
 	}
 	var b [1]byte
-	_, err := io.ReadFull(body, b[:])
+	_, err := io.ReadFull(req.Body, b[:])
 	return errors.Is(err, io.EOF)
 }
 
