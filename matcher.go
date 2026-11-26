@@ -47,10 +47,20 @@ func (m *regexMatcher) matches(v string) bool {
 }
 
 func compilePattern(raw string) (matcher, error) {
+	if raw == "" {
+		return nil, errors.New("empty pattern")
+	}
+	if strings.TrimSpace(raw) != raw {
+		return nil, errors.New("pattern has leading or trailing whitespace")
+	}
+
 	// Regexp.
 	if expr, ok := strings.CutPrefix(raw, "regex:"); ok {
 		if expr == "" {
 			return nil, errors.New("empty regex pattern")
+		}
+		if strings.TrimSpace(expr) != expr {
+			return nil, errors.New("regex pattern has leading or trailing whitespace")
 		}
 
 		// Parse the expression on its own and wrap its normalised form, so

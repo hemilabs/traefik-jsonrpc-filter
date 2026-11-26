@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 )
@@ -192,6 +193,18 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 			statusCode: bm.StatusCode,
 			err:        mergeErr(bm.Error, config.BlockError),
 		}
+		if err := checkEncodable(blockedMethods[i].err); err != nil {
+			return nil, fmt.Errorf("[%s] blockedMethods[%d].error: %w",
+				name, i, err)
+		}
+	}
+	if err := checkEncodable(config.BlockError); err != nil {
+		return nil, fmt.Errorf("[%s] blockError: %w",
+			name, err)
+	}
+	if err := checkEncodable(config.BadRequestError); err != nil {
+		return nil, fmt.Errorf("[%s] badRequestError: %w",
+			name, err)
 	}
 
 	// Compile allowed method patterns.
@@ -240,8 +253,9 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 
 func buildConfig(config *Config) (*Config, error) {
 	maxBodyBytes := orDefault(config.MaxBodyBytes, DefaultMaxBodyBytes)
-	if maxBodyBytes < 1 {
-		return nil, fmt.Errorf("maxBodyBytes must be >= 1: %d", maxBodyBytes)
+	if maxBodyBytes < 1 || maxBodyBytes == math.MaxInt64 {
+		return nil, fmt.Errorf("maxBodyBytes must be between 1 and %d: %d",
+			int64(math.MaxInt64-1), maxBodyBytes)
 	}
 
 	blockStatusCode := orDefault(config.BlockStatusCode, DefaultBlockStatusCode)
@@ -628,6 +642,13 @@ func readID(dec *json.Decoder) (json.RawMessage, error) {
 func skipValue(dec *json.Decoder) error {
 	var v json.RawMessage
 	return dec.Decode(&v)
+}
+
+// checkEncodable verifies than e is encodable, so one does not
+// accidentally send rejections with an empty body.
+func checkEncodable(e *JSONRPCError) error {
+	_, err := json.Marshal(e)
+	return err
 }
 
 func mergeErr(err *JSONRPCError, def *JSONRPCError) *JSONRPCError {

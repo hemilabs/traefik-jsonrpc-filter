@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -105,10 +106,64 @@ func TestNew(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "max int64 body bytes",
+			config: &Config{
+				BlockedMethods: []BlockedMethod{{Pattern: "debug_*"}},
+				MaxBodyBytes:   math.MaxInt64,
+			},
+			wantErr: true,
+		},
+		{
 			name: "negative max batch size",
 			config: &Config{
 				BlockedMethods: []BlockedMethod{{Pattern: "debug_*"}},
 				MaxBatchSize:   -1,
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty blocked pattern",
+			config: &Config{
+				BlockedMethods: []BlockedMethod{{Pattern: ""}},
+				AllowedMethods: []string{"eth_*"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "whitespace padded blocked pattern",
+			config: &Config{
+				BlockedMethods: []BlockedMethod{{Pattern: "eth_sendRawTransaction "}},
+			},
+			wantErr: true,
+		},
+		{
+			name:    "empty allowed pattern",
+			config:  &Config{AllowedMethods: []string{"eth_*", ""}},
+			wantErr: true,
+		},
+		{
+			name: "unencodable block error",
+			config: &Config{
+				BlockedMethods: []BlockedMethod{{Pattern: "debug_*"}},
+				BlockError:     &JSONRPCError{Data: map[any]any{"a": 1}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "unencodable bad request error data",
+			config: &Config{
+				BlockedMethods:  []BlockedMethod{{Pattern: "debug_*"}},
+				BadRequestError: &JSONRPCError{Data: map[any]any{"a": 1}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "unencodable blocked method error data",
+			config: &Config{
+				BlockedMethods: []BlockedMethod{{
+					Pattern: "debug_*",
+					Error:   &JSONRPCError{Data: map[any]any{"a": 1}},
+				}},
 			},
 			wantErr: true,
 		},

@@ -70,6 +70,8 @@ A [JSON-RPC 2.0 error object](https://www.jsonrpc.org/specification#error_object
 | `message` | `string` | `"method not allowed"` / `"invalid request"` | Short error description.  |
 | `data`    | `any`    | -                                            | Optional additional data. |
 
+Errors whose `data` cannot be encoded as JSON (e.g. a `map[any]any`) are rejected when the configuration is loaded.
+
 The response body sent to clients has the shape:
 
 ```json
@@ -155,6 +157,8 @@ Supported pattern types:
   original bytes are forwarded unchanged. Upstreams using a JSON decoder that handles these differently than Go's
   `encoding/json` may see a different method name than the filter did.
 - `*` and `**` match every method, including an empty method name.
+- Empty patterns and patterns with leading or trailing whitespace (including after the `regex:` prefix) are rejected
+  when the configuration is loaded, as they would otherwise never match.
 
 ## Request Inspection
 
